@@ -7,11 +7,12 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu } from 'tea-component';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
 import { useCurrentRole, type TeamRole } from '@/services/useCurrentRole';
 import { GlobalHeader } from '@/layouts/GlobalHeader';
 import { TabBar } from '@/layouts/TabBar';
-import { PAGE_META, GROUP_ORDER, ITEM_ICON, type PageId, type PageMeta } from '@/constants/menu';
+import { ITEM_ICON, usePageMeta, GROUP_ORDER_KEYS, type PageId } from '@/constants/menu';
 
 const { Body, Sider, Content } = Layout;
 
@@ -47,10 +48,12 @@ function legacyHashToPath(): string | null {
 }
 
 export function ConsoleLayout() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { auth, logout } = useAuthStore();
   const userRole: TeamRole | null = useCurrentRole();
+  const PAGE_META = usePageMeta();
 
   const activePage: PageId = useMemo(() => {
     const match = Object.entries(PATH_TO_PAGE).find(
@@ -85,11 +88,7 @@ export function ConsoleLayout() {
   const closePage = useCallback(
     (id: PageId) => {
       setOpenPages((prev) => {
-        // 关的是点了 × 的那个 tab（id），不是当前 active 的那个。
-        // 之前误写 `prev.filter((p) => p !== activePage)` —— 结果不管点哪个 tab
-        // 的 × 都是删当前 active tab，视觉上表现为「点第 N 个 × 却删了当前所在 tab」。
         const next = prev.filter((p) => p !== id);
-        // 只有关掉的正好是当前 active 那个 → 才需要切到剩下的最后一个
         if (id === activePage && next.length > 0) {
           navigateTo(next[next.length - 1]);
         }
@@ -100,34 +99,32 @@ export function ConsoleLayout() {
   );
 
   // ===== 基于 team role 的菜单过滤 =====
-  // 「资源管理」分组：admin 不可见
-  // 「成员管理」项：member / reviewer 不可见
+  // admin 可访问所有页面（含资源管理）
+  // 「成员管理」项：reviewer 不可见
   const menuGroups = useMemo(() => {
-    const byGroup = new Map<string, PageMeta[]>();
+    const byGroup = new Map<string, typeof PAGE_META[PageId][]>();
 
     for (const meta of Object.values(PAGE_META)) {
-      // admin 角色 → 跳过所有「资源管理」分组下的项
-      if (userRole === 'admin' && meta.group === '资源管理') continue;
-      // reviewer → 跳过「成员管理」（member 可见，但新建/删除成员/Team 按钮在组件内按角色收敛）
       if (userRole === 'reviewer' && meta.id === 'team_members') continue;
       const list = byGroup.get(meta.group) ?? [];
       list.push(meta);
       byGroup.set(meta.group, list);
     }
 
-    return GROUP_ORDER
+    return GROUP_ORDER_KEYS
+      .map((key) => t(`menu.group.${key}`))
       .filter((g) => byGroup.has(g))
       .map((g) => ({
         title: g,
         items: byGroup.get(g)!.sort((a, b) => a.order - b.order),
       }));
-  }, [userRole]);
+  }, [userRole, PAGE_META, t]);
 
-  // 「工作台」分组只有任务看板一项，置顶展示为独立入口，不显示分组标题
-  const pinnedGroup = menuGroups.find((g) => g.title === '工作台');
-  const restGroups = menuGroups.filter((g) => g.title !== '工作台');
+  const workbenchGroupTitle = t('menu.group.workbench');
+  const pinnedGroup = menuGroups.find((g) => g.title === workbenchGroupTitle);
+  const restGroups = menuGroups.filter((g) => g.title !== workbenchGroupTitle);
 
-  const renderMenuItem = (item: PageMeta) => {
+  const renderMenuItem = (item: typeof PAGE_META[PageId]) => {
     const isActive = activePage === item.id;
     return (
       <Menu.Item

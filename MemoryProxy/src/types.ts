@@ -11,13 +11,30 @@ export interface CostGuardConfig {
   /** Master switch for the private forwarding extension. */
   enabled: boolean;
   /**
+   * Whether the `/cost-guard` URL marker is required to activate the router.
+   *
+   *   - `false` (default, historical behavior): every request that reaches a
+   *     primary handler goes through the cost-guard router (subject to
+   *     `enabled`). The `/{agent}/{spaceId}/cost-guard/...` routes are NOT
+   *     registered and return 404. This is what production runs — clients that
+   *     never learned about the marker continue to work unchanged.
+   *   - `true` (opt-in, test env): the router is only activated when the
+   *     request path contains the `/cost-guard` segment. Paths without the
+   *     marker skip the router and passthrough directly to the default
+   *     upstream. Used to A/B compare guarded vs. bare traffic side by side.
+   *
+   * Independent of `enabled`: when `enabled=false` every request is a
+   * passthrough regardless of this flag, matching pre-existing semantics.
+   */
+  markerOptIn?: boolean;
+  /**
    * Pin the agent profile by id ("claude-code", "codebuddy").
    * Empty or "auto" (default) = auto-detect from request headers.
    */
   agentProfile?: string;
   /**
    * Anthropic-specific upstream override（用于 anthropic 协议请求的全局兜底上游）。
-   * Per-agent override（agentUpstreams.anthropic[agent]）优先级更高。
+   * Per-agent override（upstream.agents[agent].url）优先级更高。
    */
   anthropicUpstream?: {
     url: string;
@@ -135,6 +152,18 @@ export interface LangfuseConfig {
   publicKey: string;
   /** Langfuse secret key（sk-lf-...）。 */
   secretKey: string;
+  /**
+   * Debug 模式：上报 generation 时保留原始 Anthropic body 结构
+   * （含 `cache_control` marker / `thinking` block / tool_use 原生形态），
+   * 而不是走 `flattenAnthropicMessagesForOpik` 压平。
+   *
+   * 用途：排查请求分类（Fork vs SideQuery vs Main）、cache 命中率、
+   *      thinking 签名合法性等需要看原生结构才能判断的问题。
+   *
+   * 代价：上报体积增大 2-5x（cache_control block、thinking block 全带过去），
+   *      Langfuse 存储成本增加。**线上默认关闭**，只在排障时打开。
+   */
+  debug?: boolean;
 }
 
 /** Session initialization configuration. */
@@ -196,6 +225,14 @@ export interface SessionInitConfig {
    * - 任一「已提供」的字段在列表中查不到     → 视为 mismatch，按 onMismatch 处理
    * - 未带 team header                      → 完全走原有流程（零行为变化）
    */
+  /**
+   * 当用户在 task_select 阶段选择"跳过"时，使用此 task_id 作为默认关联。
+   * 该 task_id 不需要在控制面元数据中真实存在——仅作为标签记录，不影响
+   * 检索隔离（主维度为 team/user/agent/session）。
+   *
+   * 若未配置，task_select 阶段不会出现"跳过"选项。
+   */
+  defaultTaskId?: string;
   headerAutoSelect?: {
     /** 是否启用 header 自动预选。默认 true。 */
     enabled: boolean;
@@ -290,16 +327,47 @@ export interface SkillRuntimeConfig {
 }
 
 /**
- * Per-agent upstream override. When an agent (identified by URL path prefix like
- * "claude-code") needs a different upstream than the global default, this map
- * provides the replacement URL. Falls back to costGuard.anthropicUpstream.url or
- * upstream.url when no entry exists.
+ * Per-agent upstream override entry. When an agent (identified by URL path
+ * prefix like "claude-code") needs a different upstream than the global
+ * default, this struct provides the replacement `url` (and optional `apiKey`).
+ *
+ * Fallback semantics — three cases, matching the runtime `effectiveApiKey`
+ * resolution in `handler.ts` / `anthropicHandler.ts`:
+ *
+ *   ┌──────────────────────────────┬────────────┬──────────────────────────┐
+ *   │ agent config                 │ url used   │ apiKey used              │
+ *   ├──────────────────────────────┼────────────┼──────────────────────────┤
+ *   │ NOT in agents map            │ upstream.url│ upstream.apiKey (global)│
+ *   │ in map, url only, no apiKey  │ agent.url  │ passthrough client key  │
+ *   │ in map, url + apiKey         │ agent.url  │ agent.apiKey            │
+ *   └──────────────────────────────┴────────────┴──────────────────────────┘
+ *
+ * The presence of an entry cuts the global `upstream.apiKey` fallback —
+ * this is intentional so an operator can run some agents on a server-side
+ * key and others on the client's own key from a single proxy config.
+ *
+ * Priority order (high → low):
+ *   1. `costGuard`-provided `target.authHeaders`（cheap-model 兜底路由自带凭据）
+ *   2. `upstream.agents[agent].url` + `upstream.agents[agent].apiKey`
+ *   3. `costGuard.anthropicUpstream.url`（仅 Anthropic 协议）
+ *   4. `upstream.url` + `upstream.apiKey`（未命中 agent 时的默认）
+ *
+ * The same map serves both Anthropic and OpenAI protocols — the agent name
+ * alone determines routing, matching how {@link ProxyConfig#upstream.url}
+ * itself is protocol-agnostic.
  */
-export interface AgentUpstreamsConfig {
-  /** Anthropic Messages API endpoint override, keyed by agent name. */
-  anthropic?: Record<string, string>;
-  /** OpenAI Chat Completions endpoint override, keyed by agent name. */
-  openai?: Record<string, string>;
+export interface AgentUpstreamEntry {
+  /** Target upstream base URL. Required. */
+  url: string;
+  /**
+   * Per-agent apiKey. When set (non-empty):
+   *   - OpenAI: `Authorization: Bearer <apiKey>` is injected
+   *   - Anthropic: `x-api-key: <apiKey>` is injected
+   * When absent / empty: the client's own auth header is passed through
+   * upstream untouched. This does NOT fall back to `upstream.apiKey` —
+   * that fallback only applies when this agent has no entry at all.
+   */
+  apiKey?: string;
 }
 
 /** Top-level proxy configuration (merged from config file + CLI args). */
@@ -313,6 +381,11 @@ export interface ProxyConfig {
   upstream: {
     url: string; // OpenAI-compatible upstream URL
     apiKey: string; // 若非空则替换请求中的 API Key
+    /**
+     * Per-agent overrides keyed by agent name (URL path prefix, e.g. "claude-code").
+     * Empty / missing entry → agent falls back to `url` + `apiKey`.
+     */
+    agents: Record<string, AgentUpstreamEntry>;
   };
   log: {
     file: string;    // JSONL path; empty string disables file logging
@@ -361,7 +434,6 @@ export interface ProxyConfig {
   coreSkill: CoreSkillConfig;
   knowledge: KnowledgeConfig;
   skillRuntime: SkillRuntimeConfig;
-  agentUpstreams: AgentUpstreamsConfig;
   auth: AuthConfig;
   /**
    * Internal service accounts allowed to passthrough the proxy without any
@@ -386,6 +458,44 @@ export interface ProxyConfig {
   admin: {
     apiKey: string;
   };
+  /**
+   * `mem:` 特殊命令配置。
+   *
+   * 当 enabled=false（默认）时，handler 不会检测 mem: 命令，所有请求走原有链路。
+   * 启用后，handler 在 session init 之后检测最后一条 user message 是否为 mem: 命令，
+   * 命中则执行对应操作并直接返回伪造 LLM 响应（不注入 / 不转发 / 不计费）。
+   *
+   * allowedCommands 为命令白名单，空数组表示全部允许。
+   */
+  memCommand: MemCommandConfig;
+
+  /**
+   * CC 请求分流总开关。
+   *
+   * 启用时：根据 `cache_control` marker 位置 + tools/thinking 兜底将请求分为
+   *   main / fork / sidequery 三类，走差异化路径（fork/sidequery 跳过
+   *   session-init / mem 拦截 / injection / L0 / skill buffer，credit 仍上报）。
+   * 关闭时：所有请求视为 main，走原有一刀切链路，行为 100% 等价现状。
+   *
+   * 默认关闭。启用前建议先跑一段"分类识别但不改路径"的观察期，见方案 §7。
+   * 详见 docs/design/2026-07-30-cc-request-routing-plan.md
+   */
+  ccRequestRouting: CcRequestRoutingConfig;
+}
+
+export interface CcRequestRoutingConfig {
+  /** 是否启用 CC 请求分流。默认 false —— 关闭时走完全等价原有行为的老链路。 */
+  enabled: boolean;
+}
+
+export interface MemCommandConfig {
+  /** 是否启用 mem: 命令拦截。默认 false。 */
+  enabled: boolean;
+  /**
+   * 命令白名单。空数组 = 全部允许。
+   * 例如 ["sync", "help"] 表示只允许 mem:sync 和 mem:help，其他命令不识别。
+   */
+  allowedCommands: string[];
 }
 
 /** Context injection configuration. */
@@ -412,6 +522,24 @@ export interface InjectionConfig {
    * 单节点 / 本地开发场景可用），启动时 warn 一次。
    */
   externalGatewayUrl?: string;
+  /**
+   * 资产反思模式（内部效果评估用）。**默认关闭**，跟外部用户无关。
+   *
+   * 开启后，请求路径带 `/analyse` marker（结构同 `/cost-guard`：夹在
+   * `/{agent}/{spaceId}` 之后，如 `/codebuddy/default/analyse/v1/messages`）
+   * 时，proxy 会在系统提示词末尾追加一个 `<asset_reflection>` 块，指导
+   * agent 在回答里点评「本轮调用过的云端资产工具是否起到作用」。
+   *
+   * marker 段列表由本节点上实际注册的资产 injector 决定（skill /
+   * tdai-memory / knowledge），一个都没注册时 injector 不 emit 任何块。
+   *
+   * 语义完全对齐 `costGuard.markerOptIn`：
+   *   - `false`（默认）：injector 不 register，零性能开销
+   *   - `true`：injector register，仅当 URL 带 `/analyse/` 段时才 emit 块
+   */
+  assetReflection?: {
+    markerOptIn: boolean;
+  };
 }
 
 /**
@@ -525,6 +653,8 @@ export interface RawYamlConfig {
   upstream?: {
     url?: string;
     apiKey?: string;
+    /** Per-agent override map. See `AgentUpstreamEntry`. */
+    agents?: Record<string, { url?: string; apiKey?: string } | null | undefined>;
   };
   log?: {
     file?: string;
@@ -600,6 +730,7 @@ export interface RawYamlConfig {
     host?: string;
     publicKey?: string;
     secretKey?: string;
+    debug?: boolean;
   };
   creditReport?: { url?: string; timeoutMs?: number };
   creditPricing?: { models?: Partial<CreditPricingEntry>[] };
@@ -610,6 +741,9 @@ export interface RawYamlConfig {
     endpoint?: string;
     injectors?: string[];
     externalGatewayUrl?: string;
+    assetReflection?: {
+      markerOptIn?: boolean;
+    };
   };
   extraction?: {
     enabled?: boolean;
@@ -620,6 +754,7 @@ export interface RawYamlConfig {
     maxRetries?: number;
     injectAgentContext?: boolean;
     injectTaskContext?: boolean;
+    defaultTaskId?: string;
     debugForceIdentity?: {
       team_id?: string;
       agent_id?: string;
@@ -651,10 +786,6 @@ export interface RawYamlConfig {
   knowledge?: Partial<KnowledgeConfig>;
   skillRuntime?: {
     allowLlmWrite?: boolean;
-  };
-  agentUpstreams?: {
-    anthropic?: Record<string, string>;
-    openai?: Record<string, string>;
   };
   auth?: {
     enabled?: boolean;

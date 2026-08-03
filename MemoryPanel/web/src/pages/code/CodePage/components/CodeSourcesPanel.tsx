@@ -1,8 +1,23 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Alert, Button, Card, Form, Input, Justify, Modal, Segment, Select, Table, Tag, Text, SearchBox, StatusTip, MetricsBoard,
+  Alert,
+  Button,
+  Card,
+  Form,
+  Input,
+  Justify,
+  Modal,
+  Segment,
+  Select,
+  Table,
+  Tag,
+  Text,
+  SearchBox,
+  StatusTip,
+  MetricsBoard,
 } from 'tea-component';
 import {
   ArrowLeftIcon,
@@ -25,22 +40,76 @@ import './code-sources-panel.css';
 
 // Markdown 渲染排版（内容排版，非 Tea 组件替换范围）——保留原实现，见 design-system 例外条款。
 const mdComponents = {
-  h2: ({ children, ...p }: any) => <h2 className="text-[13px] font-semibold mb-2 mt-4 text-foreground/85" {...p}>{children}</h2>,
-  h3: ({ children, ...p }: any) => <h3 className="text-[12px] font-semibold mb-1 mt-3 font-mono text-foreground/85" {...p}>{children}</h3>,
-  p: ({ children, ...p }: any) => <p className="text-[12px] text-muted-foreground mb-2 leading-relaxed" {...p}>{children}</p>,
-  ul: ({ children, ...p }: any) => <ul className="text-[12px] text-muted-foreground list-disc pl-4 mb-2 space-y-0.5" {...p}>{children}</ul>,
-  ol: ({ children, ...p }: any) => <ol className="text-[12px] text-muted-foreground list-decimal pl-4 mb-2 space-y-0.5" {...p}>{children}</ol>,
-  li: ({ children, ...p }: any) => <li className="text-[12px]" {...p}>{children}</li>,
+  h2: ({ children, ...p }: any) => (
+    <h2 className="text-[13px] font-semibold mb-2 mt-4 text-foreground/85" {...p}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...p }: any) => (
+    <h3 className="text-[12px] font-semibold mb-1 mt-3 font-mono text-foreground/85" {...p}>
+      {children}
+    </h3>
+  ),
+  p: ({ children, ...p }: any) => (
+    <p className="text-[12px] text-muted-foreground mb-2 leading-relaxed" {...p}>
+      {children}
+    </p>
+  ),
+  ul: ({ children, ...p }: any) => (
+    <ul className="text-[12px] text-muted-foreground list-disc pl-4 mb-2 space-y-0.5" {...p}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...p }: any) => (
+    <ol className="text-[12px] text-muted-foreground list-decimal pl-4 mb-2 space-y-0.5" {...p}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...p }: any) => (
+    <li className="text-[12px]" {...p}>
+      {children}
+    </li>
+  ),
   code: ({ children, className, ...p }: any) => {
-    if (className?.includes('language-')) return <pre className="rounded-lg bg-muted p-3 text-[11px] font-mono overflow-x-auto my-2 border border-border"><code {...p}>{children}</code></pre>;
-    return <code className="rounded bg-muted px-1 py-0.5 text-[11px] font-mono" {...p}>{children}</code>;
+    if (className?.includes('language-'))
+      return (
+        <pre className="rounded-lg bg-muted p-3 text-[11px] font-mono overflow-x-auto my-2 border border-border">
+          <code {...p}>{children}</code>
+        </pre>
+      );
+    return (
+      <code className="rounded bg-muted px-1 py-0.5 text-[11px] font-mono" {...p}>
+        {children}
+      </code>
+    );
   },
   pre: ({ children, ...p }: any) => <div {...p}>{children}</div>,
   hr: () => <hr className="my-3 border-border" />,
-  strong: ({ children, ...p }: any) => <strong className="font-semibold text-foreground/85" {...p}>{children}</strong>,
-  table: ({ children, ...p }: any) => <div className="overflow-x-auto my-2"><table className="w-full text-[11px] border-collapse border border-border" {...p}>{children}</table></div>,
-  th: ({ children, ...p }: any) => <th className="border border-border px-2 py-1.5 bg-muted text-left text-[11px] font-semibold" {...p}>{children}</th>,
-  td: ({ children, ...p }: any) => <td className="border border-border px-2 py-1.5 text-[11px]" {...p}>{children}</td>,
+  strong: ({ children, ...p }: any) => (
+    <strong className="font-semibold text-foreground/85" {...p}>
+      {children}
+    </strong>
+  ),
+  table: ({ children, ...p }: any) => (
+    <div className="overflow-x-auto my-2">
+      <table className="w-full text-[11px] border-collapse border border-border" {...p}>
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children, ...p }: any) => (
+    <th
+      className="border border-border px-2 py-1.5 bg-muted text-left text-[11px] font-semibold"
+      {...p}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children, ...p }: any) => (
+    <td className="border border-border px-2 py-1.5 text-[11px]" {...p}>
+      {children}
+    </td>
+  ),
 };
 
 type SubView = 'list' | 'detail';
@@ -69,45 +138,76 @@ function isValidGitHttpUrl(raw: string): boolean {
   return GIT_HTTP_URL_RE.test(raw.trim());
 }
 
+/**
+ * 从 Git URL 提取可读的仓库名称。
+ *
+ * repo_name 可能为空（旧数据），此时回退到 URL 会显得很长。
+ * 这里从 URL 中提取最后两段路径作为 `namespace/repo` 格式：
+ *   https://gitlab.example.com/namespace/repo.git → namespace/repo
+ *   https://github.com/org/project.git → org/project
+ *   https://git.woa.com/group/sub/repo.git → sub/repo
+ * 如果只有一段路径，直接返回该段（去掉 .git 后缀）。
+ * 解析失败时返回原始 URL（保底）。
+ */
+function formatRepoName(repoName: string, repoUrl: string): string {
+  if (repoName && !repoName.startsWith('http')) return repoName;
+  const url = repoName || repoUrl;
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
+    if (segments.length >= 2) return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
+    if (segments.length === 1) return segments[0];
+  } catch {
+    // fallback
+  }
+  return url;
+}
+
 type ScopeTab = 'team' | 'fixed';
-const SCOPE_LABELS: Record<ScopeTab, string> = {
-  team: '团队 Code 池',
-  fixed: 'Agent 资产',
-};
 
 /**
  * Owner 展示 —— 走 user-profile-store 全局缓存，同一 owner 多行共享。
  * 抽子组件是 Rules of Hooks 要求（不能在 .map 里循环调 hook）。
  */
 function CodeOwnerLabel({ userId, currentUserId }: { userId: string; currentUserId: string }) {
+  const { t } = useTranslation();
   const name = useUserDisplayName(userId);
   return (
-    <span title={`Owner: ${userId}`}>
+    <span title={t('code.detail.owner', { userId })}>
       @{name || userId}
-      {userId === currentUserId && <span className="_codelist-card-meta-you">（你）</span>}
+      {userId === currentUserId && (
+        <span className="_codelist-card-meta-you">{t('code.detail.you')}</span>
+      )}
     </span>
   );
 }
 
 // 状态 → Tea Tag 语义主题映射（soft 变体），对齐 Memory 的 statusTheme。
-function statusLabel(s: string) {
+function statusLabel(t: (key: string, options?: Record<string, unknown>) => string, s: string) {
   const map: Record<string, [string, 'default' | 'success' | 'warning' | 'error']> = {
-    ready: ['就绪', 'success'],
-    pending: ['排队中', 'warning'],
-    processing: ['构建中', 'warning'],
-    failed: ['失败', 'error'],
-    cloning: ['克隆中', 'warning'],
-    indexing: ['索引中', 'warning'],
-    syncing: ['同步中', 'warning'],
-    error: ['错误', 'error'],
-    missing: ['已丢失', 'error'],
+    ready: [t('code.status.ready'), 'success'],
+    pending: [t('code.status.pending'), 'warning'],
+    processing: [t('code.status.processing'), 'warning'],
+    failed: [t('code.status.failed'), 'error'],
+    cloning: [t('code.status.cloning'), 'warning'],
+    indexing: [t('code.status.indexing'), 'warning'],
+    syncing: [t('code.status.syncing'), 'warning'],
+    error: [t('code.status.error'), 'error'],
+    missing: [t('code.status.missing'), 'error'],
   };
   const [label, theme] = map[s] ?? [s, 'default'];
-  const hint = (s === 'pending' || s === 'processing') ? ' · 可能需要数分钟' : '';
-  return <Tag theme={theme} variant="soft" size="sm">{label}{hint}</Tag>;
+  const hint = s === 'pending' || s === 'processing' ? t('code.statusHint.processing') : '';
+  return (
+    <Tag theme={theme} variant="soft" size="sm">
+      {label}
+      {hint}
+    </Tag>
+  );
 }
 
 export default function CodeSourcesPanel() {
+  const { t } = useTranslation();
   const [sources, setSources] = useState<CodeGraphDetail[]>([]);
   const [loading, setLoading] = useState(false);
   const [scopeTab, setScopeTab] = useState<ScopeTab>('team');
@@ -127,8 +227,16 @@ export default function CodeSourcesPanel() {
   const [submitting, setSubmitting] = useState(false);
 
   // Allocate-to-agent dialog state
-  const [allocateTarget, setAllocateTarget] = useState<{ cgId: string; repo: string; branch: string } | null>(null);
-  const [selectedCodeAsset, setSelectedCodeAsset] = useState<{ cgId: string; repo: string; branch: string } | null>(null);
+  const [allocateTarget, setAllocateTarget] = useState<{
+    cgId: string;
+    repo: string;
+    branch: string;
+  } | null>(null);
+  const [selectedCodeAsset, setSelectedCodeAsset] = useState<{
+    cgId: string;
+    repo: string;
+    branch: string;
+  } | null>(null);
   const { activeTeamId, activeTeam } = useTeams();
   const auth = readAuth();
   const currentUser = auth?.user_id ?? '';
@@ -136,9 +244,10 @@ export default function CodeSourcesPanel() {
   // 也符合文档 §4.2 权限规则：agent-fixed 只允许查看 caller 自己 owner 的 agent）。
   const { agents: allAgents } = useAgents(activeTeamId);
   const teamAgents = useMemo(
-    () => allAgents
-      .filter((a) => a.owner_user_id === currentUser)
-      .map((a) => ({ id: a.agent_id, name: a.name })),
+    () =>
+      allAgents
+        .filter((a) => a.owner_user_id === currentUser)
+        .map((a) => ({ id: a.agent_id, name: a.name })),
     [allAgents, currentUser],
   );
   // fixed tab 下选中的 agent_id
@@ -156,15 +265,18 @@ export default function CodeSourcesPanel() {
   }, [teamAgents, agentFilter]);
 
   const fetchFixedBindings = useCallback(async () => {
-    if (!agentFilter) { setFixedBoundIds(new Set()); return; }
+    if (!agentFilter) {
+      setFixedBoundIds(new Set());
+      return;
+    }
     try {
       const items = await knowledgeApi.code.agentFixed(agentFilter);
       setFixedBoundIds(new Set(items.map((it) => it.knowledge_id)));
     } catch (e: any) {
-      tea.notify.error(e?.message || '加载固定资产失败');
+      tea.notify.error(e?.message || t('code.notify.loadFixedFailed'));
       setFixedBoundIds(new Set());
     }
-  }, [agentFilter]);
+  }, [agentFilter, t]);
 
   useEffect(() => {
     if (scopeTab === 'fixed') void fetchFixedBindings();
@@ -184,18 +296,25 @@ export default function CodeSourcesPanel() {
     if (scopeTab === 'team') return displaySources;
     if (scopeTab === 'fixed') {
       if (!agentFilter) return [];
-      return displaySources.filter((source) => source.code_graph_id && fixedBoundIds.has(source.code_graph_id));
+      return displaySources.filter(
+        (source) => source.code_graph_id && fixedBoundIds.has(source.code_graph_id),
+      );
     }
     return displaySources;
   }, [displaySources, scopeTab, agentFilter, fixedBoundIds]);
 
   // 统计只跟随当前资产范围，避免搜索或状态筛选让概览数据失真。
-  const stats = useMemo(() => ({
-    total: scopeSources.length,
-    ready: scopeSources.filter((source) => source.status === 'ready').length,
-    processing: scopeSources.filter((source) => source.status === 'pending' || source.status === 'processing').length,
-    totalFiles: scopeSources.reduce((total, source) => total + (source.stats?.files ?? 0), 0),
-  }), [scopeSources]);
+  const stats = useMemo(
+    () => ({
+      total: scopeSources.length,
+      ready: scopeSources.filter((source) => source.status === 'ready').length,
+      processing: scopeSources.filter(
+        (source) => source.status === 'pending' || source.status === 'processing',
+      ).length,
+      totalFiles: scopeSources.reduce((total, source) => total + (source.stats?.files ?? 0), 0),
+    }),
+    [scopeSources],
+  );
 
   const filteredSources = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase();
@@ -231,7 +350,11 @@ export default function CodeSourcesPanel() {
   const fetchSeqRef = useRef(0);
 
   const fetchSources = useCallback(async () => {
-    if (!activeTeamId) { setSources([]); setLoading(false); return; }
+    if (!activeTeamId) {
+      setSources([]);
+      setLoading(false);
+      return;
+    }
     const seq = ++fetchSeqRef.current;
     setLoading(true);
     // 立即清空旧数据 —— 否则切 tab 时会先看到上一个 tab 的列表，
@@ -287,7 +410,7 @@ export default function CodeSourcesPanel() {
               // （callback S2S 是主力，这里只是兜底，但失败要可见）
               const msg = e?.message || String(e);
               if (!/already|exist|409|registered|ok/i.test(msg)) {
-                tea.notify.error(`注册 meta 失败: ${msg}`);
+                tea.notify.error(t('code.notify.metaFailed', { msg }));
               }
             }
             toRemove.push(detail.code_graph_id);
@@ -316,26 +439,28 @@ export default function CodeSourcesPanel() {
       }
     };
     void poll();
-    const timer = setInterval(() => { void poll(); }, 8000);
+    const timer = setInterval(() => {
+      void poll();
+    }, 8000);
     return () => clearInterval(timer);
-  }, [hasInFlight, activeTeamId, fetchSources]);
+  }, [hasInFlight, activeTeamId, fetchSources, t]);
 
   async function handleUnbindCode(codeGraphId: string) {
     if (!agentFilter) return;
     const ok = await tea.confirm({
-      message: '确认解绑该代码图谱？',
-      description: '将从当前 agent 移除该代码图谱绑定。',
-      okText: '解绑',
+      message: t('code.confirm.unbind'),
+      description: t('code.confirm.unbind.desc'),
+      okText: t('code.confirm.unbind.ok'),
     });
     if (!ok) return;
     try {
       await knowledgeApi.code.unbind(codeGraphId, agentFilter);
-      tea.notify.success('已解绑');
+      tea.notify.success(t('code.notify.unbound'));
       if (selectedCodeAsset?.cgId === codeGraphId) setSelectedCodeAsset(null);
       await fetchFixedBindings();
       await fetchSources();
     } catch (e: any) {
-      tea.notify.error(e?.message || '解绑失败');
+      tea.notify.error(e?.message || t('code.notify.unbindFailed'));
     }
   }
 
@@ -344,32 +469,47 @@ export default function CodeSourcesPanel() {
     if (!repo || !formBranch.trim() || !activeTeamId) return;
     // 防御性校验：按钮已按 validUrl 禁用，这里再挡一层防止绕过
     if (!isValidGitHttpUrl(repo)) {
-      tea.notify.error('请输入合法的 HTTPS Git 仓库地址，且必须以 .git 结尾（如 https://gitlab.example.com/namespace/repo.git），不能含空格。');
+      tea.notify.error(t('code.register.invalidUrl'));
       return;
     }
     setSubmitting(true);
     try {
       const detail = await knowledgeApi.code.create(activeTeamId, repo, formBranch.trim(), repo);
-      setShowRegister(false); setFormRepo(''); setFormBranch('main');
+      setShowRegister(false);
+      setFormRepo('');
+      setFormBranch('main');
       setScopeTab('team');
-      setInFlight((prev) => [...prev.filter((x) => x.code_graph_id !== detail.code_graph_id), detail]);
-      tea.notify.info('仓库已注册，正在构建代码图谱，可能需要数分钟');
+      setInFlight((prev) => [
+        ...prev.filter((x) => x.code_graph_id !== detail.code_graph_id),
+        detail,
+      ]);
+      tea.notify.info(t('code.notify.registered'));
       fetchSources();
-    } catch (e: any) { tea.notify.error(e); }
-    finally { setSubmitting(false); }
+    } catch (e: any) {
+      tea.notify.error(e);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleSync = async (cgId: string) => {
-    try { await knowledgeApi.code.sync(cgId); fetchSources(); }
-    catch (e: any) { tea.notify.error(e); }
+    try {
+      await knowledgeApi.code.sync(cgId);
+      fetchSources();
+    } catch (e: any) {
+      tea.notify.error(e);
+    }
   };
 
   const handleDelete = async (cgId: string) => {
-    const source = sources.find(s => s.code_graph_id === cgId);
+    const source = sources.find((s) => s.code_graph_id === cgId);
     if (!source) return;
     const ok = await tea.confirm({
-      message: `确定要删除仓库「${source.repo_name || source.repo_url} (${source.branch})」吗？`,
-      okText: '删除',
+      message: t('code.confirm.delete', {
+        name: formatRepoName(source.repo_name, source.repo_url),
+        branch: source.branch,
+      }),
+      okText: t('code.action.delete'),
     });
     if (!ok) return;
     try {
@@ -381,9 +521,11 @@ export default function CodeSourcesPanel() {
       setInFlight((prev) => prev.filter((x) => x.code_graph_id !== cgId));
       if (selectedCodeAsset?.cgId === cgId) setSelectedCodeAsset(null);
       if (selectedCgId === cgId) setSubView('list');
-      tea.notify.success('已删除');
+      tea.notify.success(t('code.notify.deleted'));
       fetchSources();
-    } catch (e: any) { tea.notify.error(e); }
+    } catch (e: any) {
+      tea.notify.error(e);
+    }
   };
 
   const openDetail = (cgId: string) => {
@@ -427,14 +569,16 @@ export default function CodeSourcesPanel() {
 
   // ══════════════════════════════════ 详情视图 ══════════════════════════════════
   if (subView === 'detail') {
-    const selRepo = selected?.repo_name ?? '';
+    const selRepo = selected ? formatRepoName(selected.repo_name, selected.repo_url) : '';
     const selBranch = selected?.branch ?? '';
     return (
       <div className="_codedetail-root">
         {/* 返回面包屑 */}
         <div className="_codedetail-breadcrumb">
           <Button type="link" onClick={() => setSubView('list')}>
-            <span className="_codedetail-inline-icon"><ArrowLeftIcon size={14} /> Code_Graph</span>
+            <span className="_codedetail-inline-icon">
+              <ArrowLeftIcon size={14} /> {t('code.detail.breadcrumb')}
+            </span>
           </Button>
           <span className="_codedetail-breadcrumb-sep">/</span>
           <span className="_codedetail-breadcrumb-current _codedetail-mono">{selRepo}</span>
@@ -446,43 +590,69 @@ export default function CodeSourcesPanel() {
             <div className="_codedetail-header-row">
               <div className="_codedetail-header-left">
                 <CodeIcon size={18} />
-                <span className="_codedetail-title" title={selRepo}>{selRepo}</span>
-                <Text theme="label">分支 {selBranch}</Text>
-                {selected?.commit_hash && <Text theme="label" className="_codedetail-mono">@ {selected.commit_hash}</Text>}
-                {selected && statusLabel(selected.status)}
-                {selected?.last_sync_at && <Text theme="label">{new Date(selected.last_sync_at).toLocaleString()}</Text>}
+                <span className="_codedetail-title" title={selRepo}>
+                  {selRepo}
+                </span>
+                <Text theme="label">{t('code.detail.branch', { branch: selBranch })}</Text>
+                {selected?.commit_hash && (
+                  <Text theme="label" className="_codedetail-mono">
+                    @ {selected.commit_hash}
+                  </Text>
+                )}
+                {selected && statusLabel(t, selected.status)}
+                {selected?.last_sync_at && (
+                  <Text theme="label">{new Date(selected.last_sync_at).toLocaleString()}</Text>
+                )}
               </div>
               <div className="_codedetail-header-actions">
                 <Button type="primary" onClick={() => handleSync(selectedCgId)}>
-                  <span className="_codedetail-inline-icon"><RefreshIcon size={14} />同步</span>
+                  <span className="_codedetail-inline-icon">
+                    <RefreshIcon size={14} />
+                    {t('code.action.sync')}
+                  </span>
                 </Button>
               </div>
             </div>
           </Card.Body>
         </Card>
 
-        {selected?.sync_error && <Alert type="error" className="_codedetail-error">{selected.sync_error}</Alert>}
+        {selected?.sync_error && (
+          <Alert type="error" className="_codedetail-error">
+            {selected.sync_error}
+          </Alert>
+        )}
 
         {/* 统计 */}
         {selected?.stats && (
           <div className="_codedetail-stats">
-            <MetricsBoard title="文件" value={selected.stats.files?.toLocaleString() ?? '-'} />
-            <MetricsBoard title="图节点" value={selected.stats.nodes?.toLocaleString() ?? '-'} />
-            <MetricsBoard title="图边" value={selected.stats.edges?.toLocaleString() ?? '-'} />
+            <MetricsBoard
+              title={t('code.detail.files')}
+              value={selected.stats.files?.toLocaleString() ?? '-'}
+            />
+            <MetricsBoard
+              title={t('code.detail.nodes')}
+              value={selected.stats.nodes?.toLocaleString() ?? '-'}
+            />
+            <MetricsBoard
+              title={t('code.detail.edges')}
+              value={selected.stats.edges?.toLocaleString() ?? '-'}
+            />
           </div>
         )}
 
         {/* 仓库信息 */}
         {selected && (
           <Card>
-            <Card.Body title="仓库信息">
+            <Card.Body title={t('code.detail.repoInfo')}>
               <div className="_codedetail-info-grid">
                 <Text theme="label">Code Graph ID</Text>
                 <Text className="_codedetail-mono">{selected.code_graph_id}</Text>
                 <Text theme="label">Git URL</Text>
                 <Text className="_codedetail-mono">{selected.repo_url || '—'}</Text>
-                <Text theme="label">最后同步</Text>
-                <Text>{selected.last_sync_at ? new Date(selected.last_sync_at).toLocaleString() : '—'}</Text>
+                <Text theme="label">{t('code.detail.lastSync')}</Text>
+                <Text>
+                  {selected.last_sync_at ? new Date(selected.last_sync_at).toLocaleString() : '—'}
+                </Text>
               </div>
             </Card.Body>
           </Card>
@@ -490,9 +660,9 @@ export default function CodeSourcesPanel() {
 
         {/* 代码搜索 */}
         <Card>
-          <Card.Body title="代码搜索">
+          <Card.Body title={t('code.detail.search')}>
             <Text theme="label" parent="div" className="_codedetail-hint">
-              按符号名快速定位，只返回匹配的函数 / 类 / 变量所在的文件与行号，不含代码原文。适合"这个符号在哪里"。
+              {t('code.detail.search.hint')}
             </Text>
             <div className="_codedetail-search-row">
               <SearchBox
@@ -500,13 +670,15 @@ export default function CodeSourcesPanel() {
                 value={searchQuery}
                 onChange={(v) => setSearchQuery(v)}
                 onSearch={() => void handleSearch()}
-                placeholder="输入符号名（函数 / 类 / 变量），返回其所在位置…"
+                placeholder={t('code.detail.search.placeholder')}
               />
             </div>
             {searching && <StatusTip status="loading" />}
             {!searching && searchResult && (
               <div className="_codedetail-result-box">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{searchResult}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                  {searchResult}
+                </ReactMarkdown>
               </div>
             )}
           </Card.Body>
@@ -514,9 +686,9 @@ export default function CodeSourcesPanel() {
 
         {/* 代码探索 */}
         <Card>
-          <Card.Body title="代码探索">
+          <Card.Body title={t('code.detail.explore')}>
             <Text theme="label" parent="div" className="_codedetail-hint">
-              一次返回相关文件的完整原文与调用关系，让 AI 直接拿到上下文，无需再逐个 grep / 读文件。适合"这个功能是怎么实现的"。
+              {t('code.detail.explore.hint')}
             </Text>
             <div className="_codedetail-search-row">
               <SearchBox
@@ -524,13 +696,15 @@ export default function CodeSourcesPanel() {
                 value={exploreQuery}
                 onChange={(v) => setExploreQuery(v)}
                 onSearch={() => void handleExplore()}
-                placeholder="用自然语言或符号名描述要理解的功能 / 流程，返回相关文件原文…"
+                placeholder={t('code.detail.explore.placeholder')}
               />
             </div>
             {exploring && <StatusTip status="loading" />}
             {!exploring && exploreResult && (
               <div className="_codedetail-result-box">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{exploreResult}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                  {exploreResult}
+                </ReactMarkdown>
               </div>
             )}
           </Card.Body>
@@ -543,286 +717,412 @@ export default function CodeSourcesPanel() {
   return (
     <div className="_asset-code-page">
       <AssetPageHeader
-        title="Code_Graph"
-        scope={(
+        title={t('code.title')}
+        scope={
           <Segment
             value={scopeTab}
             onChange={(value) => setScopeTab(value as ScopeTab)}
-            options={(['team', 'fixed'] as ScopeTab[]).map((tab) => ({ value: tab, text: SCOPE_LABELS[tab] }))}
+            options={(['team', 'fixed'] as ScopeTab[]).map((tab) => ({
+              value: tab,
+              text: t(`code.scope.${tab}`),
+            }))}
           />
-        )}
-        agent={scopeTab === 'fixed' ? (
-          <Select
-            appearance="button"
-            matchButtonWidth
-            value={agentFilter}
-            onChange={setAgentFilter}
-            disabled={teamAgents.length === 0}
-            placeholder="无可选 Agent"
-            options={teamAgents.map((agent) => ({ value: agent.id, text: `${agent.name}（${agent.id}）` }))}
-          />
-        ) : undefined}
-        subtitle={activeTeam ? `${activeTeam.name} · 共 ${stats.total} 个仓库` : `共 ${stats.total} 个仓库`}
-        actions={scopeTab !== 'fixed' ? (
-          <Button
-            onClick={() => setAllocateTarget(selectedCodeAsset)}
-            disabled={!selectedCodeAsset}
-            tooltip={!selectedCodeAsset ? '请先选中一条代码资产' : undefined}
-          >
-            分配到 Agent
-          </Button>
-        ) : undefined}
+        }
+        agent={
+          scopeTab === 'fixed' ? (
+            <Select
+              appearance="button"
+              matchButtonWidth
+              value={agentFilter}
+              onChange={setAgentFilter}
+              disabled={teamAgents.length === 0}
+              placeholder={t('code.noAgent')}
+              options={teamAgents.map((agent) => ({
+                value: agent.id,
+                text: `${agent.name}（${agent.id}）`,
+              }))}
+            />
+          ) : undefined
+        }
+        subtitle={
+          activeTeam
+            ? t('code.subtitle.team', { name: activeTeam.name, count: stats.total })
+            : t('code.subtitle.global', { count: stats.total })
+        }
+        actions={
+          scopeTab !== 'fixed' ? (
+            <Button
+              onClick={() => setAllocateTarget(selectedCodeAsset)}
+              disabled={!selectedCodeAsset}
+              tooltip={!selectedCodeAsset ? t('code.allocate.disabled') : undefined}
+            >
+              {t('code.allocateToAgent')}
+            </Button>
+          ) : undefined
+        }
       />
 
       <Card className="_asset-code-content-card">
-          <Card.Body>
-            <div className="_asset-code-stats">
-              <MetricsBoard title="仓库总数" value={stats.total} />
-              <MetricsBoard title="已就绪" value={stats.ready} />
-              <MetricsBoard title="处理中" value={stats.processing} />
-              <MetricsBoard title="文件总数" value={stats.totalFiles} />
-            </div>
-            <Table.ActionPanel>
-              <Justify
-                left={<Button type="primary" onClick={() => setShowRegister(true)}>+ 注册仓库</Button>}
-                right={(
-                  <div className="_asset-code-toolbar">
-                    <SearchBox
-                      value={keyword}
-                      onChange={setKeyword}
-                      placeholder="搜索名称 / 分支 / ID"
-                    />
-                    <Segment
-                      value={statusFilter}
-                      onChange={(value) => setStatusFilter(value as StatusFilter)}
-                      options={[
-                        { value: 'all', text: '全部状态' },
-                        { value: 'ready', text: '就绪' },
-                        { value: 'processing', text: '处理中' },
-                        { value: 'error', text: '异常' },
-                      ]}
-                    />
-                    <Segment
-                      value={viewMode}
-                      onChange={(value) => setViewMode(value as ViewMode)}
-                      options={[
-                        { value: 'card', text: <ViewModuleIcon /> },
-                        { value: 'list', text: <ViewListIcon /> },
-                      ]}
-                    />
-                  </div>
-                )}
-              />
-            </Table.ActionPanel>
+        <Card.Body>
+          <div className="_asset-code-stats">
+            <MetricsBoard title={t('code.metrics.total')} value={stats.total} />
+            <MetricsBoard title={t('code.metrics.ready')} value={stats.ready} />
+            <MetricsBoard title={t('code.metrics.processing')} value={stats.processing} />
+            <MetricsBoard title={t('code.metrics.totalFiles')} value={stats.totalFiles} />
+          </div>
+          <Table.ActionPanel>
+            <Justify
+              left={
+                <Button type="primary" onClick={() => setShowRegister(true)}>
+                  + {t('code.register')}
+                </Button>
+              }
+              right={
+                <div className="_asset-code-toolbar">
+                  <SearchBox
+                    value={keyword}
+                    onChange={setKeyword}
+                    placeholder={t('code.searchPlaceholder')}
+                  />
+                  <Segment
+                    value={statusFilter}
+                    onChange={(value) => setStatusFilter(value as StatusFilter)}
+                    options={[
+                      { value: 'all', text: t('code.filter.allStatus') },
+                      { value: 'ready', text: t('code.status.ready') },
+                      { value: 'processing', text: t('code.status.processing') },
+                      { value: 'error', text: t('code.filter.error') },
+                    ]}
+                  />
+                  <Segment
+                    value={viewMode}
+                    onChange={(value) => setViewMode(value as ViewMode)}
+                    options={[
+                      { value: 'card', text: <ViewModuleIcon /> },
+                      { value: 'list', text: <ViewListIcon /> },
+                    ]}
+                  />
+                </div>
+              }
+            />
+          </Table.ActionPanel>
 
-            {loading ? (
-              <StatusTip status="loading" />
-            ) : displaySources.length === 0 ? (
-              <StatusTip
-                status="empty"
-                emptyText={(
-                  <div className="_asset-code-empty">
-                    <CodeIcon size="large" />
-                    <Text>暂无已注册仓库</Text>
-                    <Text theme="label">点击上方“+ 注册仓库”注册第一个</Text>
-                  </div>
-                )}
-              />
-            ) : filteredSources.length === 0 ? (
-              <StatusTip status="empty" emptyText="没有匹配的仓库，试试调整搜索或筛选条件。" />
-            ) : viewMode === 'card' ? (
-              <div className="_codelist-grid">
-                {filteredSources.map((source) => {
-                  const isSelected = selectedCodeAsset?.cgId === source.code_graph_id;
-                  const repoLabel = source.repo_name || source.repo_url;
-                  return (
-                    <div
-                      key={source.code_graph_id}
-                      className={`_codelist-card ${isSelected ? 'is-selected' : ''}`}
-                      onClick={() => setSelectedCodeAsset({ cgId: source.code_graph_id, repo: repoLabel, branch: source.branch })}
+          {loading ? (
+            <StatusTip status="loading" />
+          ) : displaySources.length === 0 ? (
+            <StatusTip
+              status="empty"
+              emptyText={
+                <div className="_asset-code-empty">
+                  <CodeIcon size="large" />
+                  <Text>{t('code.empty.title')}</Text>
+                  <Text theme="label">{t('code.empty.desc')}</Text>
+                </div>
+              }
+            />
+          ) : filteredSources.length === 0 ? (
+            <StatusTip status="empty" emptyText={t('code.empty.filtered')} />
+          ) : viewMode === 'card' ? (
+            <div className="_codelist-grid">
+              {filteredSources.map((source) => {
+                const isSelected = selectedCodeAsset?.cgId === source.code_graph_id;
+                const repoLabel = formatRepoName(source.repo_name, source.repo_url);
+                return (
+                  <div
+                    key={source.code_graph_id}
+                    className={`_codelist-card ${isSelected ? 'is-selected' : ''}`}
+                    onClick={() =>
+                      setSelectedCodeAsset({
+                        cgId: source.code_graph_id,
+                        repo: repoLabel,
+                        branch: source.branch,
+                      })
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="_codelist-card-head _codelist-card-name-trigger"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openDetail(source.code_graph_id);
+                      }}
+                      title={t('code.detail.viewDetail', { name: repoLabel })}
                     >
-                      <button
-                        type="button"
-                        className="_codelist-card-head _codelist-card-name-trigger"
-                        onClick={(event) => { event.stopPropagation(); openDetail(source.code_graph_id); }}
-                        title={`查看 ${repoLabel} 详情`}
-                      >
-                        <CodeIcon size={16} />
-                        <span className="_codelist-card-name">{repoLabel}</span>
-                        <ChevronRightIcon size={14} className="_codelist-card-chevron" />
-                      </button>
-                      <div className="_codelist-card-meta">
-                        {statusLabel(source.status)}
-                        <span>分支 {source.branch}</span>
-                        {source.commit_hash && <span className="_codedetail-mono">@ {source.commit_hash}</span>}
-                        {source.stats && <span>{source.stats.nodes.toLocaleString()} nodes · {source.stats.files.toLocaleString()} files</span>}
-                        <span>{formatShortTime(source.last_sync_at)}</span>
-                      </div>
-                      <div className="_codelist-card-owner">
-                        <UsergroupIcon size={12} />
-                        {scopeTab === 'fixed' ? (
-                          `固定资产 · ${agentFilter || '未选择 Agent'}`
-                        ) : source.owner_user_id ? (
-                          <CodeOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
-                        ) : (
-                          '团队 Code 池'
-                        )}
-                      </div>
-                      <div className="_codelist-card-id">ID：{source.code_graph_id}</div>
-                      <div className="_codelist-card-actions" onClick={(event) => event.stopPropagation()}>
-                        {scopeTab === 'fixed' ? (
-                          <Button type="weak" onClick={() => handleUnbindCode(source.code_graph_id)}>
-                            <span className="_codelist-inline-icon"><UsergroupIcon size={14} />解绑</span>
-                          </Button>
-                        ) : (
-                          <Button type="weak" onClick={() => setAllocateTarget({ cgId: source.code_graph_id, repo: repoLabel, branch: source.branch })}>分配</Button>
-                        )}
-                        <Button type="icon" tooltip="同步" onClick={() => handleSync(source.code_graph_id)}>
-                          <RefreshIcon size={14} />
-                        </Button>
-                        <Button type="icon" tooltip="删除" onClick={() => handleDelete(source.code_graph_id)}>
-                          <DeleteIcon size={14} />
-                        </Button>
-                      </div>
+                      <CodeIcon size={16} />
+                      <span className="_codelist-card-name">{repoLabel}</span>
+                      <ChevronRightIcon size={14} className="_codelist-card-chevron" />
+                    </button>
+                    <div className="_codelist-card-meta">
+                      {statusLabel(t, source.status)}
+                      <span>{t('code.detail.branch', { branch: source.branch })}</span>
+                      {source.commit_hash && (
+                        <span className="_codedetail-mono">@ {source.commit_hash}</span>
+                      )}
+                      {source.stats && (
+                        <span>
+                          {t('code.stats', {
+                            nodes: source.stats.nodes.toLocaleString(),
+                            files: source.stats.files.toLocaleString(),
+                          })}
+                        </span>
+                      )}
+                      <span>{formatShortTime(source.last_sync_at)}</span>
                     </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <Table
-                records={filteredSources}
-                recordKey="code_graph_id"
-                addons={[scrollable({ minWidth: 1120 })]}
-                columns={[
-                  {
-                    key: 'repo_name',
-                    header: '仓库',
-                    width: 250,
-                    render: (source) => (
-                      <button
-                        type="button"
-                        className="_codelist-row-name"
-                        onClick={() => openDetail(source.code_graph_id)}
-                        title={`查看 ${source.repo_name || source.repo_url} 详情`}
+                    <div className="_codelist-card-owner">
+                      <UsergroupIcon size={12} />
+                      {scopeTab === 'fixed' ? (
+                        t('code.fixedAsset', { agent: agentFilter || t('code.noAgent') })
+                      ) : source.owner_user_id ? (
+                        <CodeOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
+                      ) : (
+                        t('code.scope.team')
+                      )}
+                    </div>
+                    <div className="_codelist-card-id">
+                      {t('code.card.id', { id: source.code_graph_id })}
+                    </div>
+                    <div
+                      className="_codelist-card-actions"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {scopeTab === 'fixed' ? (
+                        <Button type="weak" onClick={() => handleUnbindCode(source.code_graph_id)}>
+                          <span className="_codelist-inline-icon">
+                            <UsergroupIcon size={14} />
+                            {t('code.action.unbind')}
+                          </span>
+                        </Button>
+                      ) : (
+                        <Button
+                          type="weak"
+                          onClick={() =>
+                            setAllocateTarget({
+                              cgId: source.code_graph_id,
+                              repo: repoLabel,
+                              branch: source.branch,
+                            })
+                          }
+                        >
+                          {t('code.action.allocate')}
+                        </Button>
+                      )}
+                      <Button
+                        type="icon"
+                        tooltip={t('code.action.sync')}
+                        onClick={() => handleSync(source.code_graph_id)}
                       >
-                        <CodeIcon size={14} />
-                        <span>{source.repo_name || source.repo_url}</span>
-                        <ChevronRightIcon size={12} />
-                      </button>
-                    ),
-                  },
-                  {
-                    key: 'status',
-                    header: '状态',
-                    width: 120,
-                    render: (source) => statusLabel(source.status),
-                  },
-                  {
-                    key: 'branch',
-                    header: '分支 / Commit',
-                    width: 190,
-                    render: (source) => (
-                      <span className="_codelist-branch">
-                        <span>{source.branch}</span>
-                        {source.commit_hash && <span className="_codedetail-mono">@ {source.commit_hash}</span>}
+                        <RefreshIcon size={14} />
+                      </Button>
+                      <Button
+                        type="icon"
+                        tooltip={t('code.action.delete')}
+                        onClick={() => handleDelete(source.code_graph_id)}
+                      >
+                        <DeleteIcon size={14} />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <Table
+              records={filteredSources}
+              recordKey="code_graph_id"
+              addons={[scrollable({ minWidth: 1120 })]}
+              columns={[
+                {
+                  key: 'repo_name',
+                  header: t('code.table.repo'),
+                  width: 250,
+                  render: (source) => (
+                    <button
+                      type="button"
+                      className="_codelist-row-name"
+                      onClick={() => openDetail(source.code_graph_id)}
+                      title={t('code.detail.viewDetail', {
+                        name: formatRepoName(source.repo_name, source.repo_url),
+                      })}
+                    >
+                      <CodeIcon size={14} />
+                      <span>{formatRepoName(source.repo_name, source.repo_url)}</span>
+                      <ChevronRightIcon size={12} />
+                    </button>
+                  ),
+                },
+                {
+                  key: 'status',
+                  header: t('code.table.status'),
+                  width: 120,
+                  render: (source) => statusLabel(t, source.status),
+                },
+                {
+                  key: 'branch',
+                  header: t('code.table.branch'),
+                  width: 190,
+                  render: (source) => (
+                    <span className="_codelist-branch">
+                      <span>{source.branch}</span>
+                      {source.commit_hash && (
+                        <span className="_codedetail-mono">@ {source.commit_hash}</span>
+                      )}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'stats',
+                  header: t('code.table.stats'),
+                  width: 150,
+                  render: (source) =>
+                    source.stats
+                      ? t('code.stats', {
+                          nodes: source.stats.nodes.toLocaleString(),
+                          files: source.stats.files.toLocaleString(),
+                        })
+                      : '—',
+                },
+                {
+                  key: 'owner',
+                  header: t('code.table.owner'),
+                  width: 180,
+                  render: (source) =>
+                    scopeTab === 'fixed' ? (
+                      <span className="_codelist-inline-icon">
+                        <UsergroupIcon size={12} />
+                        {agentFilter || t('code.noAgent')}
                       </span>
-                    ),
-                  },
-                  {
-                    key: 'stats',
-                    header: '图谱统计',
-                    width: 150,
-                    render: (source) => source.stats ? `${source.stats.nodes.toLocaleString()} nodes · ${source.stats.files.toLocaleString()} files` : '—',
-                  },
-                  {
-                    key: 'owner',
-                    header: '归属',
-                    width: 180,
-                    render: (source) => scopeTab === 'fixed' ? (
-                      <span className="_codelist-inline-icon"><UsergroupIcon size={12} />{agentFilter || '未选择 Agent'}</span>
                     ) : source.owner_user_id ? (
                       <CodeOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
                     ) : (
-                      <Text theme="label">团队池</Text>
+                      <Text theme="label">{t('code.teamPool')}</Text>
                     ),
+                },
+                {
+                  key: 'last_sync_at',
+                  header: t('code.table.lastSync'),
+                  width: 140,
+                  render: (source) => (
+                    <Text theme="label">{formatShortTime(source.last_sync_at)}</Text>
+                  ),
+                },
+                {
+                  key: 'code_graph_id',
+                  header: 'Code Graph ID',
+                  width: 200,
+                  render: (source) => <span className="_codelist-id">{source.code_graph_id}</span>,
+                },
+                {
+                  key: 'actions',
+                  header: t('code.table.actions'),
+                  width: 280,
+                  fixed: 'right',
+                  render: (source) => {
+                    const repoLabel = formatRepoName(source.repo_name, source.repo_url);
+                    return (
+                      <div className="_codelist-table-actions">
+                        {scopeTab === 'fixed' ? (
+                          <Button
+                            type="link"
+                            onClick={() => handleUnbindCode(source.code_graph_id)}
+                          >
+                            {t('code.action.unbind')}
+                          </Button>
+                        ) : (
+                          <Button
+                            type="link"
+                            onClick={() =>
+                              setAllocateTarget({
+                                cgId: source.code_graph_id,
+                                repo: repoLabel,
+                                branch: source.branch,
+                              })
+                            }
+                          >
+                            {t('code.action.allocate')}
+                          </Button>
+                        )}
+                        <Button type="link" onClick={() => handleSync(source.code_graph_id)}>
+                          {t('code.action.sync')}
+                        </Button>
+                        <Button
+                          type="link"
+                          onClick={() => handleDelete(source.code_graph_id)}
+                          className="_codelist-delete-action"
+                        >
+                          {t('code.action.delete')}
+                        </Button>
+                      </div>
+                    );
                   },
-                  {
-                    key: 'last_sync_at',
-                    header: '最后更新时间',
-                    width: 140,
-                    render: (source) => <Text theme="label">{formatShortTime(source.last_sync_at)}</Text>,
-                  },
-                  {
-                    key: 'code_graph_id',
-                    header: 'Code Graph ID',
-                    width: 200,
-                    render: (source) => <span className="_codelist-id">{source.code_graph_id}</span>,
-                  },
-                  {
-                    key: 'actions',
-                    header: '操作',
-                    width: 280,
-                    fixed: 'right',
-                    render: (source) => {
-                      const repoLabel = source.repo_name || source.repo_url;
-                      return (
-                        <div className="_codelist-table-actions">
-                          {scopeTab === 'fixed' ? (
-                            <Button type="link" onClick={() => handleUnbindCode(source.code_graph_id)}>解绑</Button>
-                          ) : (
-                            <Button type="link" onClick={() => setAllocateTarget({ cgId: source.code_graph_id, repo: repoLabel, branch: source.branch })}>分配</Button>
-                          )}
-                          <Button type="link" onClick={() => handleSync(source.code_graph_id)}>同步</Button>
-                          <Button type="link" onClick={() => handleDelete(source.code_graph_id)} className="_codelist-delete-action">删除</Button>
-                        </div>
-                      );
-                    },
-                  },
-                ]}
-              />
-            )}
-          </Card.Body>
+                },
+              ]}
+            />
+          )}
+        </Card.Body>
       </Card>
 
       {/* Register Modal */}
-      {showRegister && (() => {
-        const trimmedRepo = formRepo.trim();
-        const isSsh = trimmedRepo.startsWith('git@');
-        const validUrl = isValidGitHttpUrl(trimmedRepo);
-        // 已输入内容、非 SSH、但又不是合法 http(s) 地址 → 提示格式错误。
-        const showUrlError = !!trimmedRepo && !isSsh && !validUrl;
-        return (
-        <Modal visible caption="注册代码仓库" size="m" onClose={() => setShowRegister(false)} disableEscape={submitting}>
-          <Modal.Body>
-            <Form>
-              <Form.Item label="Git URL" required extra="注册后将自动 clone 并建立代码索引。">
-                <Input
-                  size="full"
-                  value={formRepo}
-                  onChange={setFormRepo}
-                  placeholder="https://gitlab.example.com/namespace/repo.git"
-                />
-              </Form.Item>
-              {isSsh && (
-                <Form.Item><Alert type="warning">当前版本不支持 SSH 格式的仓库地址，请改用 HTTPS 格式（如 https://gitlab.example.com/namespace/repo.git）。</Alert></Form.Item>
-              )}
-              {showUrlError && (
-                <Form.Item><Alert type="error">请输入合法的 HTTP(S) Git 仓库地址，且必须以 .git 结尾（如 https://gitlab.example.com/namespace/repo.git），不能含空格。</Alert></Form.Item>
-              )}
-              <Form.Item label="分支" required>
-                <Input size="full" value={formBranch} onChange={setFormBranch} placeholder="main" />
-              </Form.Item>
-            </Form>
-          </Modal.Body>
-          <Modal.Footer>
-            <Button type="primary" onClick={handleRegister} disabled={submitting || !formBranch.trim() || !validUrl} loading={submitting}>
-              {submitting ? '注册中…' : '注册'}
-            </Button>
-            <Button onClick={() => setShowRegister(false)} disabled={submitting}>取消</Button>
-          </Modal.Footer>
-        </Modal>
-        );
-      })()}
+      {showRegister &&
+        (() => {
+          const trimmedRepo = formRepo.trim();
+          const isSsh = trimmedRepo.startsWith('git@');
+          const validUrl = isValidGitHttpUrl(trimmedRepo);
+          // 已输入内容、非 SSH、但又不是合法 http(s) 地址 → 提示格式错误。
+          const showUrlError = !!trimmedRepo && !isSsh && !validUrl;
+          return (
+            <Modal
+              visible
+              caption={t('code.register.caption')}
+              size="m"
+              onClose={() => setShowRegister(false)}
+              disableEscape={submitting}
+            >
+              <Modal.Body>
+                <Form>
+                  <Form.Item label="Git URL" required extra={t('code.register.gitUrlExtra')}>
+                    <Input
+                      size="full"
+                      value={formRepo}
+                      onChange={setFormRepo}
+                      placeholder="https://gitlab.example.com/namespace/repo.git"
+                    />
+                  </Form.Item>
+                  {isSsh && (
+                    <Form.Item>
+                      <Alert type="warning">{t('code.register.sshWarning')}</Alert>
+                    </Form.Item>
+                  )}
+                  {showUrlError && (
+                    <Form.Item>
+                      <Alert type="error">{t('code.register.invalidUrl')}</Alert>
+                    </Form.Item>
+                  )}
+                  <Form.Item label={t('code.register.branch')} required>
+                    <Input
+                      size="full"
+                      value={formBranch}
+                      onChange={setFormBranch}
+                      placeholder="main"
+                    />
+                  </Form.Item>
+                </Form>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button
+                  type="primary"
+                  onClick={handleRegister}
+                  disabled={submitting || !formBranch.trim() || !validUrl}
+                  loading={submitting}
+                >
+                  {submitting ? t('code.register.submitting') : t('code.register.submit')}
+                </Button>
+                <Button onClick={() => setShowRegister(false)} disabled={submitting}>
+                  {t('common.cancel')}
+                </Button>
+              </Modal.Footer>
+            </Modal>
+          );
+        })()}
 
       {/* Allocate Code-Graph → Agent (固定资产) */}
       {allocateTarget && (
@@ -833,9 +1133,9 @@ export default function CodeSourcesPanel() {
           team={activeTeam ? { team_id: activeTeam.team_id, name: activeTeam.name } : null}
           onClose={() => setAllocateTarget(null)}
           onAllocate={async (agentId) => {
-            if (!activeTeamId) throw new Error('请先选择 team');
+            if (!activeTeamId) throw new Error(t('code.notify.selectTeam'));
             await knowledgeApi.code.allocate(activeTeamId, allocateTarget.cgId, agentId);
-            tea.notify.success('已分配到 Agent');
+            tea.notify.success(t('code.notify.allocated'));
             await fetchSources();
             if (scopeTab === 'fixed') await fetchFixedBindings();
           }}

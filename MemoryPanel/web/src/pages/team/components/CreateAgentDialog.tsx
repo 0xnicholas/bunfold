@@ -5,6 +5,7 @@
 
 import { useState } from 'react';
 import { Button, Input, Modal, Tag } from 'tea-component';
+import { useTranslation } from 'react-i18next';
 import {
   AddIcon,
   StarFilledIcon,
@@ -66,6 +67,7 @@ export default function CreateAgentDialog({
 
   // 从真实 API 拉取团队资产列表
   const assets = useTeamAssets(team.team_id);
+  const { t } = useTranslation();
 
   const canSubmit = name.trim().length > 0 && !busy;
   const totalSelected = skills.length + codeGraphs.length + llmWikis.length + chatMemories.length;
@@ -128,31 +130,29 @@ export default function CreateAgentDialog({
   }
 
   return (
-    <Modal visible caption="创建 Agent" size="l" onClose={onClose} disableEscape={busy}>
+    <Modal visible caption={t('createAgent.caption')} size="l" onClose={onClose} disableEscape={busy}>
       <Modal.Body>
         <div className="_memory-form-stack">
-          <div className="_memory-modal-description">只有名字必填 · 描述 / 规则 prompt / 原子能力都可留空，创建后再补</div>
+          <div className="_memory-modal-description">{t('createAgent.desc')}</div>
         <div className="_memory-target-team-row">
           <span className="_memory-target-team-avatar">{team.name.slice(0, 1).toUpperCase()}</span>
           <div className="_memory-target-team-meta">
-            <div className="_memory-target-team-label">将创建到 team</div>
+            <div className="_memory-target-team-label">{t('createAgent.teamLabel')}</div>
             <div className="_memory-target-team-name-row">
               <span className="_memory-target-team-name">{team.name}</span>
               <Tag size="sm">{team.team_id}</Tag>
             </div>
           </div>
           <div className="_memory-target-team-hint">
-            切 team 请到
-            <br />
-            左上角
+            {t('createAgent.teamHint')}
           </div>
         </div>
 
         <div className="_memory-template-box">
           <div className="_memory-template-box-title-row">
-            <span className="_memory-template-box-title">套用模板</span>
+            <span className="_memory-template-box-title">{t('createAgent.template.title')}</span>
             <span className="_memory-template-box-hint">
-              选填 · 一键预填描述 / prompt / 原子能力，名字仍需自己填
+              {t('createAgent.template.hint')}
             </span>
           </div>
           <div className="_memory-template-chip-row">
@@ -175,9 +175,9 @@ export default function CreateAgentDialog({
                     <button
                       type="button"
                       onClick={() => handleDeleteTemplate(tpl)}
-                      title="删除该自定义模板"
+                      title={t('createAgent.template.delete')}
                       className="_memory-template-chip-close"
-                      aria-label="删除该自定义模板"
+                      aria-label={t('createAgent.template.delete')}
                     >
                       <CloseIcon size={10} />
                     </button>
@@ -190,119 +190,119 @@ export default function CreateAgentDialog({
               onClick={openSaveTemplateForm}
               className="_memory-template-save-btn"
             >
-              <AddIcon size={11} /> 保存为模板
+              <AddIcon size={11} /> {t('createAgent.template.save')}
             </button>
           </div>
           {saveTplOpen && (
             <div className="_memory-template-save-form">
               <div className="_memory-template-save-hint">
-                把当前表单存成可复用的自定义模板（数据存储在浏览器本地，清除缓存会丢失已保存的模板）。以下内容默认取自当前表单，可在此微调。
+                {t('createAgent.template.saveHint')}
               </div>
               <Input
                 size="full"
                 value={tplName}
                 onChange={setTplName}
-                placeholder="模板名（必填），如：安全审计 Reviewer"
+                placeholder={t('createAgent.template.namePlaceholder')}
               />
               <Input
                 size="full"
                 value={tplSummary}
                 onChange={setTplSummary}
-                placeholder="一句话说明（选填）"
+                placeholder={t('createAgent.template.summaryPlaceholder')}
               />
-              <div className="_memory-light-field-label">一句话描述</div>
+              <div className="_memory-light-field-label">{t('createAgent.template.descLabel')}</div>
               <Input
                 size="full"
                 value={tplDescription}
                 onChange={setTplDescription}
-                placeholder="模板的一句话功能介绍（选填）"
+                placeholder={t('createAgent.template.descPlaceholder')}
               />
-              <div className="_memory-light-field-label">角色定位 prompt</div>
+              <div className="_memory-light-field-label">{t('createAgent.template.roleLabel')}</div>
               <Input.TextArea
                 size="full"
                 rows={3}
                 value={tplRolePrompt}
                 onChange={setTplRolePrompt}
-                placeholder="role prompt · 这个 agent 扮演什么角色 / 职责定位（选填）"
+                placeholder={t('createAgent.template.rolePlaceholder')}
               />
-              <div className="_memory-light-field-label">规则固定 prompt</div>
+              <div className="_memory-light-field-label">{t('createAgent.template.rulesLabel')}</div>
               <Input.TextArea
                 size="full"
                 rows={4}
                 value={tplRulesPrompt}
                 onChange={setTplRulesPrompt}
-                placeholder={'rules prompt · 硬约束，建议编号列表（选填）\n1. …\n2. …'}
+                placeholder={t('createAgent.template.rulesPlaceholder')}
                 className="_memory-mono-textarea"
               />
 
               <div className="_memory-template-save-actions">
-                <Button onClick={resetSaveTemplateForm}>取消</Button>
+                <Button onClick={resetSaveTemplateForm}>{t('createAgent.template.cancel')}</Button>
                 <Button type="primary"
                   disabled={!tplName.trim()}
                   onClick={handleSaveTemplate}
                 >
-                  保存模板
+                  {t('createAgent.template.saveBtn')}
                 </Button>
               </div>
             </div>
           )}
         </div>
 
-        <LightField label="名字 *">
+        <LightField label={t('createAgent.name')}>
           <Input
             autoFocus
             size="full"
             value={name}
             onChange={setName}
-            placeholder="如 Code Reviewer"
+            placeholder={t('createAgent.name.placeholder')}
           />
           <div className="_memory-field-hint">
-            agent_id 由后端生成并保证全局唯一（不限于本 team）。
+            {t('createAgent.name.hint')}
           </div>
         </LightField>
 
-        <LightField label="一句话描述" hint="选填 · 留空也可以，详情页随时改。">
+        <LightField label={t('createAgent.descLabel')} hint={t('createAgent.descHint')}>
           <Input
             size="full"
             value={description}
             onChange={setDescription}
-            placeholder="一句话功能介绍：这个 agent 是干什么的？（选填）"
+            placeholder={t('createAgent.descPlaceholder')}
           />
         </LightField>
 
         <LightField
-          label="角色定位 prompt"
-          hint="role prompt · 选填 · 描述这个 agent 扮演什么角色 / 职责定位，创建后可在详情页补。"
+          label={t('createAgent.roleLabel')}
+          hint={t('createAgent.roleHint')}
         >
           <Input.TextArea
             size="full"
             value={rolePrompt}
             onChange={setRolePrompt}
             rows={3}
-            placeholder="如：你是严格的 PR Reviewer，是代码合入主干前的最后一道质量关卡。"
+            placeholder={t('createAgent.rolePlaceholder')}
           />
         </LightField>
 
         <LightField
-          label="规则固定 prompt"
-          hint="rules prompt · 选填 · 注入到每次对话开头的硬约束，建议用编号列表，创建后可在详情页补。"
+          label={t('createAgent.rulesLabel')}
+          hint={t('createAgent.rulesHint')}
         >
           <Input.TextArea
             size="full"
             value={rulesPrompt}
             onChange={setRulesPrompt}
             rows={4}
-            placeholder={'1. …\n2. …\n3. …'}
+            placeholder={t('createAgent.rulesPlaceholder')}
             className="_memory-mono-textarea"
           />
         </LightField>
 
         {assets.loading ? (
-          <div className="_memory-asset-loading">加载团队资产中…</div>
+          <div className="_memory-asset-loading">{t('createAgent.assets.loading')}</div>
         ) : (
           <>
             <div className="_memory-asset-toolbar">
-              <span className="_memory-asset-toolbar-label">原子能力：</span>
+              <span className="_memory-asset-toolbar-label">{t('createAgent.assets.label')}</span>
               <button
                 type="button"
                 onClick={() => {
@@ -313,7 +313,7 @@ export default function CreateAgentDialog({
                 }}
                 className="_memory-asset-toolbar-btn"
               >
-                一键全选
+                {t('createAgent.assets.selectAll')}
               </button>
               {totalSelected > 0 && (
                 <button
@@ -326,13 +326,13 @@ export default function CreateAgentDialog({
                   }}
                   className="_memory-asset-toolbar-btn"
                 >
-                  清空
+                  {t('createAgent.assets.clearAll')}
                 </button>
               )}
             </div>
             <CollapseGroup
               icon={<BooksIcon size={16} />}
-              title="Wiki 知识库"
+              title={t('settings.module.wiki')}
               selectedCount={llmWikis.length}
               totalCount={assets.wikis.length}
               open={wikiOpen}
@@ -346,7 +346,7 @@ export default function CreateAgentDialog({
             </CollapseGroup>
             <CollapseGroup
               icon={<CodeIcon size={16} />}
-              title="Code_Graph"
+              title={t('settings.module.code')}
               selectedCount={codeGraphs.length}
               totalCount={assets.codeGraphs.length}
               open={codeGraphOpen}
@@ -360,7 +360,7 @@ export default function CreateAgentDialog({
             </CollapseGroup>
             <CollapseGroup
               icon={<ToolsIcon size={16} />}
-              title="Skill 技能"
+              title={t('settings.module.skill')}
               selectedCount={skills.length}
               totalCount={assets.skills.length}
               open={skillsOpen}
@@ -374,7 +374,7 @@ export default function CreateAgentDialog({
             </CollapseGroup>
             <CollapseGroup
               icon={<ChatIcon size={16} />}
-              title="Chat_Memory"
+              title={t('settings.module.chatMemory')}
               selectedCount={chatMemories.length}
               totalCount={assets.chatMemories.length}
               open={memoryOpen}
@@ -406,9 +406,9 @@ export default function CreateAgentDialog({
             chatMemories,
           })}
         >
-          创建
+          {t('createAgent.submit')}
         </Button>
-        <Button onClick={onClose} disabled={busy}>取消</Button>
+        <Button onClick={onClose} disabled={busy}>{t('createAgent.cancel')}</Button>
       </Modal.Footer>
     </Modal>
   );

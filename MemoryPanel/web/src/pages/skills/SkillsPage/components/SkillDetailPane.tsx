@@ -10,10 +10,10 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
 
 import { Card, Modal, Text } from 'tea-component';
+import { MarkdownView } from '@/components/MarkdownView';
 import { getSkill, readSkillFile, type SkillDetail, type ReadFileResult } from '@/lib/skill-api';
 import './skill-detail.css';
 
@@ -91,6 +91,7 @@ function FileTreeView(props: {
 }
 
 export default function SkillDetailPane(props: { skillName: string | null; skillId?: string }) {
+  const { t } = useTranslation();
   const [view, setView] = useState<SkillDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -134,7 +135,7 @@ export default function SkillDetailPane(props: { skillName: string | null; skill
     } catch (err) {
       setFilePreview({
         path,
-        content: `读取失败：${err instanceof Error ? err.message : String(err)}`,
+        content: t('skills.detail.readFailed', { msg: err instanceof Error ? err.message : String(err) }),
         encoding: 'utf-8',
         size_bytes: 0,
         mime_type: 'text/plain',
@@ -149,7 +150,7 @@ export default function SkillDetailPane(props: { skillName: string | null; skill
     return (
       <Card className="_memory-skill-detail-card">
         <Card.Body className="_memory-skill-detail-empty">
-          <Text theme="weak">在左侧选中一条 skill 查看详情。</Text>
+          <Text theme="weak">{t('skills.detail.empty')}</Text>
         </Card.Body>
       </Card>
     );
@@ -168,7 +169,7 @@ export default function SkillDetailPane(props: { skillName: string | null; skill
         {!stale && error && (
           <Text theme="danger" parent="div" className="_memory-skill-detail-error">{error}</Text>
         )}
-        {showLoading && <Text theme="weak" parent="div">加载中…</Text>}
+        {showLoading && <Text theme="weak" parent="div">{t('skills.detail.loading')}</Text>}
         {currentView && (
           <>
             {/* Metadata */}
@@ -194,20 +195,16 @@ export default function SkillDetailPane(props: { skillName: string | null; skill
             {/* Body（从 content 中提取 Markdown 正文） */}
             <div className="_memory-skill-detail-section">
               <Text theme="label" parent="div" className="_memory-skill-detail-section-title">Body</Text>
-              <div className="_memory-skill-detail-markdown prose prose-slate max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {extractBody(currentView.content)}
-                </ReactMarkdown>
-              </div>
+              <MarkdownView>{extractBody(currentView.content)}</MarkdownView>
             </div>
 
             {/* Files */}
             <div className="_memory-skill-detail-section">
               <Text theme="label" parent="div" className="_memory-skill-detail-section-title">
-                附属资源 ({currentView.manifest?.length ?? 0})
+                {t('skills.detail.files', { count: currentView.manifest?.length ?? 0 })}
               </Text>
               {!currentView.manifest || currentView.manifest.length === 0 ? (
-                <Text theme="weak" parent="div">无附属文件。</Text>
+                <Text theme="weak" parent="div">{t('skills.detail.noFiles')}</Text>
               ) : (
                 <div className="_memory-skill-files-box">
                   <FileTreeView nodes={fileTree} onPick={pickFile} />
@@ -223,10 +220,10 @@ export default function SkillDetailPane(props: { skillName: string | null; skill
         <Modal visible caption={filePreview.path} size="xl" onClose={() => setFilePreview(null)}>
           <Modal.Body>
             {filePreviewLoading ? (
-              <Text theme="weak" parent="div">加载中…</Text>
+              <Text theme="weak" parent="div">{t('skills.detail.loading')}</Text>
             ) : filePreview.encoding === 'base64' ? (
               <Text theme="weak" parent="div">
-                二进制文件 ({filePreview.size_bytes} bytes)，base64 已省略。
+                {t('skills.detail.binaryFile', { size: filePreview.size_bytes })}
               </Text>
             ) : (
               <pre className="_memory-skill-file-content">{filePreview.content}</pre>

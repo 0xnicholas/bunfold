@@ -42,6 +42,10 @@ tdai-gateway.*.yaml
 .coding-ci.yaml
 .gitlab-ci.yml
 
+# 私有 submodule：不入镜像。运行时 dynamic import 失败会走 fallback，
+# 因此内外部镜像行为一致（开源分支上该目录本就不存在）。
+src/integrations
+
 # e2e / 压测 / 冒烟脚本非 runtime 必需，且含调试用途的 SSH host / 内网 IP 引用
 scripts/e2e-*
 scripts/verify-*

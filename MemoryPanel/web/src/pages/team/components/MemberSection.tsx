@@ -5,6 +5,7 @@
 
 import { useState } from 'react';
 import { Alert, Button, Copy, Form, Input, Modal, Segment, Select, Tag } from 'tea-component';
+import { useTranslation } from 'react-i18next';
 import { AddIcon, CloseIcon } from 'tea-icons-react';
 import { isTeamAdmin, invalidateBackendCache, type Team } from '@/services';
 import { membersApi, usersApi } from '@/lib/teamApi';
@@ -25,14 +26,15 @@ export function MemberSection({
   isAdmin: boolean;
 }) {
   const [removing, setRemoving] = useState<string | null>(null);
+  const { t } = useTranslation();
   // 只有全局 admin 或 team admin/owner 才能添加成员；普通成员无此入口。
   const canAddMember = _globalAdmin || isTeamAdmin(team, currentUser);
 
   async function handleRemove(userId: string) {
     const ok = await tea.confirm({
-      message: `移除成员 ${userId}？`,
-      description: '此操作仅将该用户移出当前团队，不会删除用户账号。',
-      okText: '移除',
+      message: t('member.remove.confirm', { userId }),
+      description: t('member.remove.desc'),
+      okText: t('member.remove.ok'),
     });
     if (!ok) return;
     setRemoving(userId);
@@ -51,17 +53,16 @@ export function MemberSection({
       <div className="_memory-section-header">
         <div className="_memory-section-header-info">
           <div className="_memory-section-header-title-row">
-            <div className="_memory-section-title">成员（{team.members.length}）</div>
+            <div className="_memory-section-title">{t('member.title', { count: team.members.length })}</div>
             <Tag size="sm">{team.team_id}</Tag>
           </div>
           <div className="_memory-section-subtitle">
-            「{team.name}」的人类成员；admin 可管理 team 资产，member 可使用资产并创建 task ·
-            点击卡片查看详情
+            {t('member.subtitle', { name: team.name })}
           </div>
         </div>
         {canAddMember && (
-          <Button onClick={onAdd} title="按 user_id 邀请成员加入">
-            <AddIcon size={14} /> 添加成员
+          <Button onClick={onAdd} title={t('member.add.tooltip')}>
+            <AddIcon size={14} /> {t('member.add')}
           </Button>
         )}
       </div>
@@ -109,6 +110,7 @@ function MemberCard({
 }) {
   const displayName = username?.trim() || user_id;
   const hasUsername = !!username?.trim();
+  const { t } = useTranslation();
 
   return (
     <div className="_memory-member-card">
@@ -118,7 +120,7 @@ function MemberCard({
       <div className="_memory-member-info">
         <div className="_memory-member-id">
           {displayName}
-          {isMe && <span className="_memory-member-me-tag"> （你）</span>}
+          {isMe && <span className="_memory-member-me-tag">{t('member.me')}</span>}
         </div>
         {hasUsername && (
           <div className="_memory-member-role" style={{ fontSize: '10px', color: 'var(--tea-color-text-tertiary)' }}>
@@ -127,7 +129,7 @@ function MemberCard({
         )}
         <div className="_memory-member-role">
           {role}
-          {isOwner ? ' · 创建者' : ''}
+          {isOwner ? t('member.role.creator') : ''}
         </div>
       </div>
       <div className="_memory-member-actions">
@@ -137,8 +139,8 @@ function MemberCard({
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
             disabled={removing}
             className="_memory-member-remove-btn"
-            title="移除该成员"
-            aria-label="移除该成员"
+            title={t('member.remove.tooltip')}
+            aria-label={t('member.remove.tooltip')}
           >
             {removing ? '…' : <CloseIcon size={12} />}
           </button>
@@ -174,6 +176,7 @@ export function AddMemberDialog({
   const [role, setRole] = useState<'admin' | 'member'>('member');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { t } = useTranslation();
 
   // 新建用户表单
   const [newUsername, setNewUsername] = useState('');
@@ -188,11 +191,11 @@ export function AddMemberDialog({
   async function submitExisting() {
     const id = userId.trim();
     if (!id) {
-      setError('请输入对方的 user_id。');
+      setError(t('addMember.error.emptyId'));
       return;
     }
     if (id === currentUser) {
-      setError('不能添加自己；如需调整角色，请由其他 team admin 操作。');
+      setError(t('addMember.error.self'));
       return;
     }
     setSubmitting(true);
@@ -211,12 +214,12 @@ export function AddMemberDialog({
   async function submitNew() {
     const username = newUsername.trim();
     if (!username) {
-      setError('请输入用户名。');
+      setError(t('addMember.error.emptyName'));
       return;
     }
     // 用户名只允许英文字母、数字、下划线（与后端 user_id 段校验规则一致）
     if (!/^[A-Za-z0-9_]+$/.test(username)) {
-      setError('用户名仅支持英文字母、数字、下划线，不能包含其他符号或空格。');
+      setError(t('addMember.error.invalidName'));
       return;
     }
     setSubmitting(true);
@@ -260,15 +263,15 @@ export function AddMemberDialog({
   return (
     <Modal
       visible
-      caption={<>添加成员到「{team.name}」<Tag size="sm">{team.team_id}</Tag></>}
+      caption={<>{t('addMember.caption', { name: team.name })}<Tag size="sm">{team.team_id}</Tag></>}
       size="m"
       onClose={onClose}
       disableEscape={submitting}
     >
       <Modal.Body>
-        {!canGrantAdmin && <Alert type="info">仅 team admin 可授予 admin 角色</Alert>}
+        {!canGrantAdmin && <Alert type="info">{t('addMember.adminOnlyHint')}</Alert>}
         <Form>
-      <Form.Item label="方式">
+      <Form.Item label={t('addMember.mode')}>
         {canCreateUser ? (
           <Segment
             value={mode}
@@ -278,19 +281,19 @@ export function AddMemberDialog({
               if (v === 'new') setRole('member');
             }}
             options={[
-              { value: 'existing', text: '添加已有用户' },
-              { value: 'new', text: '新建用户并加入团队' },
+              { value: 'existing', text: t('addMember.mode.existing') },
+              { value: 'new', text: t('addMember.mode.new') },
             ]}
           />
         ) : (
           <div className="_memory-field-hint">
-            添加已有用户（按 user_id 邀请加入团队）。新建用户账号须全局 admin 权限。
+            {t('addMember.mode.hint')}
           </div>
         )}
       </Form.Item>
 
       {mode === 'existing' ? (
-        <Form.Item label="user_id *">
+        <Form.Item label={t('addMember.userId')}>
           <div>
             <Input
               autoFocus
@@ -301,14 +304,14 @@ export function AddMemberDialog({
                 setError(null);
               }}
               onPressEnter={() => void handleSubmit()}
-              placeholder="例如 usr-xxxxxxxxxxxx"
+              placeholder={t('addMember.userId.placeholder')}
             />
-            <div className="_memory-field-hint">可让对方在「我的资料」里复制发给你</div>
+            <div className="_memory-field-hint">{t('addMember.userId.hint')}</div>
           </div>
         </Form.Item>
       ) : (
         <>
-          <Form.Item label="用户名" required>
+          <Form.Item label={t('addMember.username')} required>
             <div>
               <Input
                 autoFocus
@@ -319,39 +322,39 @@ export function AddMemberDialog({
                   setError(null);
                 }}
                 onPressEnter={() => void handleSubmit()}
-                placeholder="例如 alice"
+                placeholder={t('addMember.username.placeholder')}
               />
               {newUsername.trim() && !/^[A-Za-z0-9_]+$/.test(newUsername.trim()) ? (
                 <div className="_memory-field-hint" style={{ color: 'var(--tea-color-text-error-default)' }}>
-                  仅支持英文字母、数字、下划线，不能包含空格或其他符号
+                  {t('addMember.username.invalid')}
                 </div>
               ) : (
-                <div className="_memory-field-hint">英文字母、数字、下划线，创建后不可修改</div>
+                <div className="_memory-field-hint">{t('addMember.username.hint')}</div>
               )}
             </div>
           </Form.Item>
         </>
       )}
 
-      <Form.Item label="角色">
+      <Form.Item label={t('addMember.role')}>
         <Select
           size="full"
           value="member"
           disabled
           options={[
-            { value: 'member', text: 'member（默认）' },
+            { value: 'member', text: t('addMember.role.default') },
           ]}
         />
-        <div className="_memory-field-hint">新成员默认角色为 member。</div>
+        <div className="_memory-field-hint">{t('addMember.role.hint')}</div>
       </Form.Item>
           {error && <Form.Item><Alert type="error">{error}</Alert></Form.Item>}
         </Form>
       </Modal.Body>
       <Modal.Footer>
         <Button type="primary" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting} loading={submitting}>
-          {mode === 'existing' ? '添加' : '新建并添加'}
+          {mode === 'existing' ? t('addMember.existing.submit') : t('addMember.new.submit')}
         </Button>
-        <Button onClick={onClose} disabled={submitting}>取消</Button>
+        <Button onClick={onClose} disabled={submitting}>{t('addMember.cancel')}</Button>
       </Modal.Footer>
     </Modal>
   );
@@ -368,27 +371,27 @@ export function CreatedUserKeyModal({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useTranslation();
 
   return (
-    <Modal visible caption="用户创建成功" size="m" onClose={onClose}>
+    <Modal visible caption={t('createdUserKey.caption')} size="m" onClose={onClose}>
       <Modal.Body>
         <Form>
-          <Alert type="success">用户 {info.username}（{info.userId}）已创建并加入团队。</Alert>
+          <Alert type="success">{t('createdUserKey.success', { username: info.username, userId: info.userId })}</Alert>
           <div className="space-y-4 text-[13px]">
         {info.keyValue ? (
           <>
             <Alert type="warning">
-              <strong>以下 User_Key 仅显示这一次</strong>，请立即复制并安全地发送给该用户。
-              关闭此弹窗后无法再次查看该 Key。
+              <strong>{t('createdUserKey.warning')}</strong>
             </Alert>
-            <Form.Item label="User_Key">
+            <Form.Item label={t('createdUserKey.keyLabel')}>
               <div className="flex items-center gap-2">
                 <code className="flex-1 rounded border bg-muted px-3 py-2 text-[12px] font-mono break-all select-all">
                   {info.keyValue}
                 </code>
                 <Copy text={info.keyValue}>
                   <Button onClick={() => setCopied(true)}>
-                    {copied ? '已复制' : '复制'}
+                    {copied ? t('createdUserKey.copied') : t('createdUserKey.copy')}
                   </Button>
                 </Copy>
               </div>
@@ -396,8 +399,7 @@ export function CreatedUserKeyModal({
           </>
         ) : (
           <Alert type="warning">
-            未能自动生成初始 User_Key。请让该用户使用以下 user_id 登录后自行在「User_Key
-            管理」中创建：
+            {t('createdUserKey.noKey')}
             <code
               className="mt-1 block rounded px-2 py-1 text-[12px] font-mono select-all"
               style={{ background: 'var(--tea-color-bg-primary-default)' }}
@@ -410,7 +412,7 @@ export function CreatedUserKeyModal({
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={onClose}>我知道了</Button>
+        <Button type="primary" onClick={onClose}>{t('createdUserKey.close')}</Button>
       </Modal.Footer>
     </Modal>
   );

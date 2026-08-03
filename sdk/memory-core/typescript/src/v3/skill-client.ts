@@ -1,10 +1,10 @@
 /**
- * v3 SkillClient — thin wrapper around the 14 `/v3/skill/*` endpoints
+ * v3 SkillClient — thin wrapper around the 15 `/v3/skill/*` endpoints
  * defined by `src/gateway/skill-handlers.ts`:
  *
  *   create / update / patch / delete / get / list / search / versions
  *   files/write / files/remove / files/read / listing / extract
- *   conversation/add
+ *   conversation/add / conversation/force-archive
  *
  * Unlike v3 `MemoryClient`, skill isolation fields for the CRUD/file/
  * listing/search endpoints are *all optional* at the schema layer (see
@@ -13,19 +13,23 @@
  * never throw client-side on missing ids. The server returns
  * 40001/40301/40302 as needed.
  *
- * The `/extract` and `/conversation/add` endpoints declare their own
- * per-field requirements at the schema layer (user/team/agent required,
- * session/space optional with server-side fallbacks); this SDK still
- * lets the server produce those 40001 responses rather than duplicating
- * the schema client-side.
+ * The `/extract`, `/conversation/add`, and `/conversation/force-archive`
+ * endpoints declare stricter per-field requirements. This SDK merges
+ * constructor defaults for `/extract`, then validates required IDs and
+ * non-empty messages locally; `/conversation/add` and
+ * `/conversation/force-archive` validate their explicit per-call fields
+ * locally without merging in defaults.
  */
 
-import { HttpTransport } from "../http.js";
+import { ParamError } from "../errors.js";
+import { V3HttpTransport } from "./http.js";
 import type { Transport } from "../client.js";
 import type {
   SkillClientDefaults,
   SkillConversationAddData,
   SkillConversationAddRequest,
+  SkillConversationForceArchiveData,
+  SkillConversationForceArchiveRequest,
   SkillCreateRequest,
   SkillDeleteData,
   SkillDeleteRequest,
@@ -59,6 +63,17 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 }
 
+function validateRequiredStrings(body: Record<string, unknown>, fields: string[], operation: string): void {
+  const missing = fields.filter((field) => typeof body[field] !== "string" || !(body[field] as string).trim());
+  if (missing.length) throw new ParamError(`${operation} requires non-empty ${missing.join(", ")}`);
+}
+
+function validateMessages(messages: unknown, operation: string): void {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new ParamError(`${operation} requires at least one message`);
+  }
+}
+
 export interface SkillClientConfig extends MemoryClientConfig, SkillClientDefaults {}
 
 /**
@@ -89,7 +104,7 @@ export class SkillClient {
       return;
     }
     const cfg = configOrTransport;
-    this.http = new HttpTransport({
+    this.http = new V3HttpTransport({
       endpoint: cfg.endpoint,
       apiKey: cfg.apiKey,
       serviceId: cfg.serviceId,
@@ -336,6 +351,8 @@ export class SkillClient {
       reason: params.reason,
       options: params.options,
     });
+    validateRequiredStrings(body, ["user_id", "team_id", "agent_id"], "extract");
+    validateMessages(params.messages, "extract");
     return this.http.post(`${V3}/extract`, body);
   }
 
@@ -364,6 +381,45 @@ export class SkillClient {
       task_id: params.task_id,
       messages: params.messages,
     });
+    validateRequiredStrings(body, ["session_id", "user_id", "team_id", "agent_id"], "conversationAdd");
+    validateMessages(params.messages, "conversationAdd");
     return this.http.post(`${V3}/conversation/add`, body);
+  }
+
+  /**
+   * `POST /v3/skill/conversation/force-archive` — manually archive the
+   * current session buffer, bypassing the tool_call / bytes thresholds.
+   * The third trigger condition alongside `/conversation/add`'s automatic
+   * archive triggers (see `docs/design/2026-07-15-skill-trigger-in-core-design.md`).
+   *
+   * Like `conversationAdd`, isolation fields are REQUIRED and this SDK
+   * validates them locally rather than merging constructor defaults.
+   * `space_id` is optional — server falls back to `auth.serviceId`.
+   *
+   * Returns `{ status: "empty" }` when the buffer has nothing to archive
+   * (no messages appended since the last archive), or
+   * `{ status: "archived", task_id, archived_at_ms, archive_key }` when
+   * the archive was written. Note: unlike `conversation/add`, the
+   * archive coordinates live at the top level (not nested under
+   * `archived`).
+   */
+  conversationForceArchive(
+    params: SkillConversationForceArchiveRequest,
+  ): Promise<SkillConversationForceArchiveData> {
+    const body = stripUndefined({
+      session_id: params.session_id,
+      space_id: params.space_id,
+      user_id: params.user_id,
+      team_id: params.team_id,
+      agent_id: params.agent_id,
+      reason: params.reason,
+      task_id: params.task_id,
+    });
+    validateRequiredStrings(
+      body,
+      ["session_id", "user_id", "team_id", "agent_id"],
+      "conversationForceArchive",
+    );
+    return this.http.post(`${V3}/conversation/force-archive`, body);
   }
 }

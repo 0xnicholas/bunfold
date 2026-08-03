@@ -9,6 +9,7 @@
  * 接口:   src/core/skill/skill-store.interface.ts
  */
 
+import { randomBase62 } from "../../utils/short-id.js";
 import { TcvdbClient, TcvdbApiError, type QueryResponse } from "./tcvdb-client.js";
 import type { BM25LocalEncoder } from "./bm25-local.js";
 import type { SparseVector } from "@tencentdb-agent-memory/tcvdb-text";
@@ -93,10 +94,11 @@ const SPARSE_VECTOR_FIELD = "sparse_vector";
 
 // ─── Ulid helpers ───────────────────────────────────────────────────────
 
+// row_id 生成器 —— VDB doc 的物理主键 (`id` primaryKey field)。
+// 与 skill_id 分离：skill_id 在版本间共享，row_id 每一行唯一。
+// base62 12 字符（~71 bit CSPRNG 真熵）。
 function defaultUlid(): string {
-  const ts = Date.now().toString(36);
-  const rnd = Math.random().toString(36).slice(2, 12);
-  return `${ts}-${rnd}`;
+  return randomBase62(12);
 }
 
 // ─── Error helpers ──────────────────────────────────────────────────────

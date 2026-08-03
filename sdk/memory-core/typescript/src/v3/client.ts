@@ -1,4 +1,5 @@
-import { HttpTransport } from "../http.js";
+import { ParamError } from "../errors.js";
+import { V3HttpTransport } from "./http.js";
 import type { Transport } from "../client.js";
 import type {
   V3AtomicCountRequest,
@@ -44,7 +45,7 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 function requireNonEmpty(name: string, value: string | undefined): string {
-  if (!value) throw new Error(`v3 MemoryClient requires non-empty ${name}`);
+  if (!value) throw new ParamError(`v3 MemoryClient requires non-empty ${name}`);
   return value;
 }
 
@@ -82,7 +83,7 @@ class IsolationContext {
   resolveSessionForWrite(override?: string): string {
     const sid = override ?? this.sessionId;
     if (!sid) {
-      throw new Error(
+      throw new ParamError(
         "v3 MemoryClient.addConversation requires session_id: " +
         "pass it in the constructor or per call. " +
         "Reads (query/search/count) may omit it to aggregate across sessions.",
@@ -122,7 +123,7 @@ export class MemoryClient {
   constructor(transport: Transport, isolation: V3IsolationContext);
   constructor(configOrTransport: V3MemoryClientConfig | Transport, isolation?: V3IsolationContext) {
     if ("post" in configOrTransport) {
-      if (!isolation) throw new Error("v3 MemoryClient transport constructor requires isolation context");
+      if (!isolation) throw new ParamError("v3 MemoryClient transport constructor requires isolation context");
       this.http = configOrTransport;
       this.iso = new IsolationContext(
         isolation.team_id,
@@ -135,7 +136,7 @@ export class MemoryClient {
     }
 
     const cfg = configOrTransport;
-    this.http = new HttpTransport({
+    this.http = new V3HttpTransport({
       endpoint: cfg.endpoint,
       apiKey: cfg.apiKey,
       serviceId: cfg.serviceId,
@@ -189,9 +190,17 @@ export class MemoryClient {
   }
 
   deleteConversation(params: V3ConversationDeleteRequest = {}): Promise<V3ConversationDeleteData> {
+    if (params.message_ids !== undefined &&
+        (!params.message_ids.length || params.message_ids.some((id) => !id))) {
+      throw new ParamError("message_ids must be a non-empty list of non-empty strings");
+    }
+    const sessionId = this.iso.resolveSession(params.session_id);
+    if (params.message_ids === undefined && !sessionId) {
+      throw new ParamError("deleteConversation requires message_ids or session_id");
+    }
     return this.http.post(`${V3}/conversation/delete`, stripUndefined({
       ...this.iso.baseBody(),
-      session_id: this.iso.resolveSession(params.session_id),
+      session_id: sessionId,
       message_ids: params.message_ids,
     }));
   }

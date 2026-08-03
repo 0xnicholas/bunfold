@@ -14,6 +14,11 @@
 
 import { getErrorMessage } from './error-message';
 import { Modal, message, notification } from 'tea-component';
+import i18n from '@/i18n';
+
+function t(key: string, opts?: Record<string, unknown>): string {
+  return i18n.t(key, opts);
+}
 
 /**
  * 结构化错误通知入参 — 适合需要展示 title + detail + requestId 的场景。
@@ -53,8 +58,8 @@ export const tea = {
     return Modal.confirm({
       message: opts.message,
       description: opts.description,
-      okText: opts.okText ?? '确认',
-      cancelText: opts.cancelText ?? '取消',
+      okText: opts.okText ?? t('teaBridge.confirm.ok'),
+      cancelText: opts.cancelText ?? t('teaBridge.confirm.cancel'),
     });
   },
 
@@ -87,7 +92,7 @@ export const tea = {
             : `request_id: ${input.requestId}`
           : input.detail;
         notification.error({
-          title: input.title ?? '操作失败',
+          title: input.title ?? t('teaBridge.notify.errorTitle'),
           description: desc,
         });
         return;
@@ -99,13 +104,13 @@ export const tea = {
         ? `${friendly}\nrequest_id: ${requestId}`
         : friendly;
       notification.error({
-        title: '操作失败',
+        title: t('teaBridge.notify.errorTitle'),
         description: desc,
       });
     },
     warning: (msg: string) =>
       notification.warning({
-        title: '提示',
+        title: t('teaBridge.notify.warningTitle'),
         description: msg,
       }),
     info: (msg: string) =>
@@ -129,9 +134,9 @@ export const tea = {
    */
   confirmDelete: (name: string, detail?: string) =>
     Modal.confirm({
-      message: `确认删除「${name}」？`,
-      description: detail ?? '删除后不可恢复。',
-      okText: '删除',
-      cancelText: '取消',
+      message: t('teaBridge.confirmDelete.message', { name }),
+      description: detail ?? t('teaBridge.confirmDelete.desc'),
+      okText: t('teaBridge.confirmDelete.ok'),
+      cancelText: t('teaBridge.confirm.cancel'),
     }),
 };

@@ -26,17 +26,30 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { assetsApi, agentsApi, type Asset } from '@/lib/teamApi';
 import { listSkills, getSkill, deleteSkillV3, type SkillSummary } from '@/lib/skill-api';
 import { getPanelSession } from '@/lib/panelSession';
-import { useTeams, isGlobalAdmin } from '@/services';
+import { useTeams } from '@/services';
 import { useSkillDetailCache } from '@/services/use-skill-detail-cache';
 import { useUserDisplayName } from '@/services/user-profile-store';
-import { Select, Button, Text, Segment, Card, List, Tag } from 'tea-component';
+import { Select, Button, Text, Segment, Card, List } from 'tea-component';
 import { LockOnIcon, ShareIcon, AppIcon, UserIcon, DeleteIcon } from 'tea-icons-react';
 import { tea } from '@/lib/tea-bridge';
 import { AssetPageHeader } from '@/pages/ResourcePage/components/AssetPageHeader';
+import { AssetSplitLayout } from '@/pages/ResourcePage/components/AssetSplitLayout';
+import {
+  AssetListPanel,
+  AssetItemHeader,
+  AssetItemName,
+  AssetItemDesc,
+  AssetItemBadges,
+  AssetBadge,
+  AssetBadgeYou,
+  AssetItemMeta,
+  AssetItemTime,
+} from '@/pages/ResourcePage/components/AssetListPanel';
 import SkillDetailPane from './SkillDetailPane';
 import ImportSkillDialog from './ImportSkillDialog';
 
@@ -45,37 +58,34 @@ import './skills-list.css';
 
 type Tab = 'team' | 'fixed' | 'personal';
 
-const TAB_LABELS: Record<Tab, string> = {
-  team: '团队资产',
-  fixed: 'Agent 资产',
-  personal: '我的资产分配',
+const TAB_I18N_KEY: Record<Tab, string> = {
+  team: 'skills.scope.team',
+  fixed: 'skills.scope.fixed',
+  personal: 'skills.scope.personal',
 };
 
-/** 统一 Skill 列表的用户归属徽章：优先展示 display_name，再回退 user_id。 */
+/** 统一 Skill 列表的用户归属指示：使用公共 AssetBadge 组件。 */
 function SkillOwnerTag({ userId, isCurrentUser }: { userId: string; isCurrentUser: boolean }) {
+  const { t } = useTranslation();
   const displayName = useUserDisplayName(userId);
   return (
-    <span title={`owner user: ${displayName || userId}（${userId}）`}>
-      <Tag theme="primary" variant="soft" size="sm" shapeType="rectangle" className="_memory-skill-owner-tag">
-        <span className="_memory-skill-tag-content">
-          <UserIcon size={10} /> {displayName || userId}
-          {isCurrentUser && '（你）'}
-        </span>
-      </Tag>
-    </span>
+    <AssetBadge icon={<UserIcon size={10} />} title={t('skills.ownerTag.title', { name: displayName || userId, id: userId })}>
+      {displayName || userId}
+      {isCurrentUser && <AssetBadgeYou>{t('skills.ownerTag.you')}</AssetBadgeYou>}
+    </AssetBadge>
   );
 }
 
 export default function SkillsPanel({
   currentUser,
-  isAdmin: isAdminFlag
+  isAdmin: _isAdmin,
 }: {
   currentUser: string;
   isAdmin: boolean;
 }) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>('team');
   const { activeTeamId, activeTeam } = useTeams();
-  const isAdmin = isGlobalAdmin(currentUser, isAdminFlag);
   const myUserId = getPanelSession()?.user?.user_id ?? '';
   const [selectedAgent, setSelectedAgent] = useState<string>('');
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -110,7 +120,7 @@ export default function SkillsPanel({
       .catch((err) => {
         if (cancelled) return;
         // agent 加载失败不致命（列表 fallback 显示 agent_id），但仍给出提示。
-        tea.notify.error(err?.message || '加载 Agent 信息失败');
+        tea.notify.error(err?.message || t('skills.notify.loadAgentsFailed'));
         setAgentNameMap({});
         setTeamAgents([]);
       });
@@ -147,6 +157,15 @@ export default function SkillsPanel({
   useEffect(() => {
     if (selectedSkillId) void preloadSkillDetail(selectedSkillId);
   }, [selectedSkillId, preloadSkillDetail]);
+
+  // 列表加载后后台预取所有可见项的数据面详情（version / owner_agent_id），
+  // 避免用户点击时才突然冒出 Agent 徽章。preload 幂等 + 去重，不会重复请求。
+  useEffect(() => {
+    if (skills.length === 0) return;
+    for (const s of skills) {
+      void preloadSkillDetail(s.skill_id);
+    }
+  }, [skills, preloadSkillDetail]);
 
   // ============================
   // Data fetching
@@ -345,7 +364,7 @@ export default function SkillsPanel({
       if (selectedSkillId === skill.skill_id) {
         setSelectedSkillId(null);
       }
-      tea.notify.success(`已删除 Skill「${skill.name}」`);
+      tea.notify.success(t('skills.notify.deleted', { name: skill.name }));
       void refresh();
     } catch (err) {
       tea.notify.error(err);
@@ -362,15 +381,19 @@ export default function SkillsPanel({
     <div className="_memory-skills-body">
       {/* 固定资产的 Agent 选择器与 Code 页 "Agent 资产" 选项栏保持相同呈现。 */}
       <AssetPageHeader
-        title="Skill 资产管理"
+        title={t('skills.title')}
         subtitle={activeTeam
-          ? `${activeTeam.name} · 共 ${tab === 'personal' ? '我的' : ''}${skills.length} 个 Skill`
-          : `共 ${tab === 'personal' ? '我的' : ''}${skills.length} 个 Skill`}
+          ? (tab === 'personal'
+              ? t('skills.subtitle.teamPersonal', { name: activeTeam.name, count: skills.length })
+              : t('skills.subtitle.team', { name: activeTeam.name, count: skills.length }))
+          : (tab === 'personal'
+              ? t('skills.subtitle.globalPersonal', { count: skills.length })
+              : t('skills.subtitle.global', { count: skills.length }))}
         scope={(
           <Segment
             value={tab}
             onChange={(v) => setTab(v as Tab)}
-            options={(['team', 'fixed', 'personal'] as Tab[]).map((t) => ({ value: t, text: TAB_LABELS[t] }))}
+            options={(['team', 'fixed', 'personal'] as Tab[]).map((t2) => ({ value: t2, text: t(TAB_I18N_KEY[t2]) }))}
           />
         )}
         agent={tab === 'fixed' ? (
@@ -380,7 +403,7 @@ export default function SkillsPanel({
             value={selectedAgent}
             onChange={(value) => { setSelectedAgent(value); setSelectedSkillId(null); }}
             disabled={teamAgents.length === 0}
-            placeholder="无可选 Agent"
+            placeholder={t('skills.noAgent')}
             options={teamAgents.map((agent) => ({ value: agent.id, text: `${agent.name}（${agent.id}）` }))}
           />
         ) : undefined}
@@ -391,21 +414,21 @@ export default function SkillsPanel({
               const forkableInPersonal = tab === 'personal' && !!selectedPersonalAsset;
               const canFork = forkableInTeam || forkableInPersonal;
               const tooltip = tab === 'fixed'
-                ? '请在「团队」或「我的资产分配」视图选中一条 skill'
+                ? t('skills.fork.tooltip.fixed')
                 : tab === 'team'
-                  ? (!selectedSkillId ? '请先选中一条 skill' : undefined)
-                  : (!selectedPersonalAsset ? '请先选中一条 skill' : undefined);
+                  ? (!selectedSkillId ? t('skills.fork.tooltip.team.empty') : undefined)
+                  : (!selectedPersonalAsset ? t('skills.fork.tooltip.personal.empty') : undefined);
               return tab === 'fixed' ? null : (
-                <Button onClick={() => setShowFork(true)} disabled={!canFork} tooltip={tooltip}>Fork（可写）</Button>
+                <Button onClick={() => setShowFork(true)} disabled={!canFork} tooltip={tooltip}>{t('skills.fork')}</Button>
               );
             })()}
             <Button
               type="primary"
               onClick={() => setShowImport(true)}
               disabled={teamAgents.length === 0}
-              tooltip={teamAgents.length === 0 ? '当前 team 暂无 agent，请先创建 agent' : undefined}
+              tooltip={teamAgents.length === 0 ? t('skills.import.tooltip.noAgent') : undefined}
             >
-              导入 Skill
+              {t('skills.import')}
             </Button>
           </>
         )}
@@ -441,145 +464,104 @@ export default function SkillsPanel({
 
       {/* === 团队资产 / 固定资产 Tab === */}
       {tab !== 'personal' && (
-      <div className="_memory-skills-split">
-        {/* 左侧导航列：固定 280px，和右侧详情从同一基线开始。 */}
-        <section className="_memory-skills-list-column">
-          <div className="_memory-skills-list-panel">
-              <div className="_memory-skills-list-header">
-                <Text theme="strong">
-                  {TAB_LABELS[tab]}
-                  {tab === 'fixed' && selectedAgent && (
-                    <Text theme="weak"> · {agentNameMap[selectedAgent] ?? selectedAgent}</Text>
-                  )}
-                </Text>
-                {/* loading 时不显示条数 —— 旧数据已清空，显示"0 条"会误导 */}
-                {!loading && <Text theme="weak">{skillsWithCache.length} 条</Text>}
-              </div>
-              {loading ? (
-                <div className="_memory-skills-list-items">
-                  {/* 骨架屏占位，替代之前的一行「加载中…」文字 */}
-                  {[0, 1, 2, 3].map((i) => (
-                    <div key={i} className="_memory-skill-item animate-pulse">
-                      <div className="h-4 w-32 rounded bg-muted mb-2" />
-                      <div className="h-3 w-48 rounded bg-muted/60" />
-                    </div>
-                  ))}
-                </div>
-              ) : skillsWithCache.length === 0 ? (
-                <div className="_memory-skills-list-empty">
-                  <Text theme="weak">
-                    {tab === 'fixed' && !selectedAgent
-                      ? '请选择一个 agent。'
-                      : tab === 'fixed'
-                        ? `Agent "${selectedAgent}" 暂无固定 skill。点击右上「导入 Skill」直接导入，或在「团队」视图选中一条 skill 后通过「Fork」分发。`
-                        : '团队里还没有任何"共享"skill。skill 新建时默认私密，只有 owner 自己能看到；如需让整个团队看到，需要 owner 在「我的资产分配」tab 里点共享按钮。'}
-                  </Text>
-                </div>
-              ) : (
-                <List split="divide" className="_memory-skills-list-items">
-                  {skillsWithCache.map((s) => {
-                    // 权限判断：
-                    //   - admin：全权限
-                    //   - skill owner（owner_user_id === 当前登录用户）：可删除
-                    const ownerIsMe = !!myUserId && s.owner_user_id === myUserId;
-                    const canManage = isAdmin || ownerIsMe;
-                    const isSelected = selectedSkillId === s.skill_id;
-                    const vis = visibilityMap[s.skill_id];
-                    const agentLabel = s.owner_agent_id
-                      ? agentNameMap[s.owner_agent_id] ?? s.owner_agent_id
-                      : '';
-                    return (
-                    <List.Item
-                      key={s.skill_id}
-                      selected={isSelected}
-                      onClick={() => setSelectedSkillId(s.skill_id)}
-                      className="_memory-skill-item"
-                    >
-                      <div className="_memory-skill-item-top">
-                        <span className="_memory-skill-item-name" title={s.name}>{s.name}</span>
-                        {/* 可见性徽章：从 visibilityMap 里读；用 Tea Tag 渲染（与 TaskWorkbench 一致） */}
-                        {vis === 'private' && (
-                          <Tag theme="default" variant="soft" size="sm" shapeType="rectangle" className="_memory-skill-state-tag">
-                            <span className="_memory-skill-tag-content"><LockOnIcon size={10} /> 私密</span>
-                          </Tag>
-                        )}
-                        {/* 团队 tab 的全部条目都已是共享资产，不重复占用标题行空间。 */}
-                        {vis === 'team' && tab !== 'team' && (
-                          <Tag theme="success" variant="soft" size="sm" shapeType="rectangle" className="_memory-skill-state-tag">
-                            <span className="_memory-skill-tag-content"><ShareIcon size={10} /> 共享</span>
-                          </Tag>
-                        )}
-                        {vis && vis !== 'private' && vis !== 'team' && (
-                          <Tag theme="default" variant="outlined" size="sm">{vis}</Tag>
-                        )}
-                        {/* owner agent 徽章：自己 owner 的高亮（warning），别人的用 default */}
-                        {s.owner_agent_id && (
-                          <span title={`owner agent: ${agentNameMap[s.owner_agent_id] ?? '(未知)'}（${s.owner_agent_id}）`}>
-                            <Tag
-                              theme={ownerIsMe ? 'warning' : 'default'}
-                              variant="soft"
-                              size="sm"
-                              shapeType="rectangle"
-                              className="_memory-skill-owner-tag"
-                            >
-                              <span className="_memory-skill-tag-content"><AppIcon size={10} /> {agentLabel}</span>
-                            </Tag>
-                          </span>
-                        )}
-                        {/* 用户徽章用 display_name，避免直接把长 user_id 撑大标签。 */}
-                        {s.owner_user_id && (
-                          <SkillOwnerTag userId={s.owner_user_id} isCurrentUser={ownerIsMe} />
-                        )}
-                        {/* 删除按钮：默认隐藏，hover/selected 时显出（避免误触） */}
-                        {canManage && (
-                          <Button
-                            type="icon"
-                            icon="delete"
-                            tooltip={ownerIsMe ? '彻底删除我的 Skill（不可恢复）' : '以管理员身份彻底删除此 Skill（不可恢复）'}
-                            className="_memory-skill-item-delete"
-                            onClick={async (e: any) => {
-                              e?.stopPropagation();
-                              // 二次确认：明确"彻底删除"语义与影响范围。
-                              // 数据面 skill 为软删除（archived）；meta asset 经钩子物理删除。
-                              // Skill 按 owner_agent_id 独立 —— 删除只影响其所属 Agent，
-                              // 其他 Agent 下同名的独立副本不受影响。按"彻底删除"语义描述。
-                              const ok = await tea.confirm({
-                                message: `确认彻底删除 Skill「${s.name}」？`,
-                                description:
-                                  '删除后该 Skill 将从所属 Agent 卸载，且不可恢复。' +
-                                  '其他 Agent 下同名的独立副本不受影响。' +
-                                  '如仅需临时停用，请考虑将其设为"私密"而非删除。',
-                                okText: '彻底删除',
-                                cancelText: '取消',
-                              });
-                              if (ok) {
-                                void handleDelete(s);
-                              }
-                            }}
-                            disabled={deleteLoading}
-                          />
-                        )}
-                      </div>
-                      {s.description && (
-                        <p className="_memory-skill-item-desc" title={s.description}>{s.description}</p>
-                      )}
-                      <div className="_memory-skill-item-meta">
-                        <span>v{s.version}</span>
-                        <span className="_memory-skill-item-time">{new Date(s.updated_at_ms).toLocaleString()}</span>
-                      </div>
-                    </List.Item>
-                    );
-                  })}
-                </List>
-              )}
-          </div>
-        </section>
+      <AssetSplitLayout
+        sidebar={
+          <AssetListPanel
+            title={
+              <>
+                {t(TAB_I18N_KEY[tab])}
+                {tab === 'fixed' && selectedAgent && (
+                  <span className="_alp-title-suffix"> · {agentNameMap[selectedAgent] ?? selectedAgent}</span>
+                )}
+              </>
+            }
+            count={t('skills.count', { count: skillsWithCache.length })}
+            loading={loading}
+            items={skillsWithCache}
+            selectedId={selectedSkillId}
+            getItemId={(s) => s.skill_id}
+            onSelect={(s) => setSelectedSkillId(s.skill_id)}
+            emptyText={
+              tab === 'fixed' && !selectedAgent
+                ? t('skills.empty.fixed.noAgent')
+                : tab === 'fixed'
+                  ? t('skills.empty.fixed.hasAgent', { agent: selectedAgent })
+                  : t('skills.empty.team')
+            }
+            renderItem={(s) => {
+              const ownerIsMe = !!myUserId && s.owner_user_id === myUserId;
+              const canManage = ownerIsMe;
+              const vis = visibilityMap[s.skill_id];
+              const agentLabel = s.owner_agent_id
+                ? agentNameMap[s.owner_agent_id] ?? s.owner_agent_id
+                : '';
+              return (
+                <>
+                  <AssetItemHeader>
+                    <AssetItemName title={s.name}>{s.name}</AssetItemName>
+                    {canManage && (
+                      <Button
+                        type="text"
+                        tooltip={ownerIsMe ? t('skills.delete.own') : t('skills.delete.admin')}
+                        className="_memory-skill-item-delete"
+                        onClick={async (e: any) => {
+                          e?.stopPropagation();
+                          const ok = await tea.confirm({
+                            message: t('skills.delete.confirm', { name: s.name }),
+                            description: t('skills.delete.confirm.desc'),
+                            okText: t('skills.delete.okText'),
+                            cancelText: t('skills.delete.cancelText'),
+                          });
+                          if (ok) {
+                            void handleDelete(s);
+                          }
+                        }}
+                        disabled={deleteLoading}
+                      >
+                        <DeleteIcon size={14} />
+                      </Button>
+                    )}
+                  </AssetItemHeader>
 
-        {/* 右侧详情列：自适应占满剩余宽度。 */}
-        <section className="_memory-skills-detail-column">
+                  {s.description && (
+                    <AssetItemDesc>{s.description}</AssetItemDesc>
+                  )}
+
+                  {(vis || s.owner_agent_id || s.owner_user_id) && (
+                    <AssetItemBadges>
+                      {vis === 'private' && (
+                        <AssetBadge icon={<LockOnIcon size={10} />}>{t('skills.tag.private')}</AssetBadge>
+                      )}
+                      {vis === 'team' && tab !== 'team' && (
+                        <AssetBadge icon={<ShareIcon size={10} />}>{t('skills.tag.shared')}</AssetBadge>
+                      )}
+                      {vis && vis !== 'private' && vis !== 'team' && (
+                        <AssetBadge>{vis}</AssetBadge>
+                      )}
+                      {s.owner_agent_id && (
+                        <AssetBadge icon={<AppIcon size={10} />} title={t('skills.agentTag.title', { name: agentNameMap[s.owner_agent_id] ?? t('skills.agentTag.unknown'), id: s.owner_agent_id })}>
+                          {agentLabel}
+                        </AssetBadge>
+                      )}
+                      {s.owner_user_id && (
+                        <SkillOwnerTag userId={s.owner_user_id} isCurrentUser={ownerIsMe} />
+                      )}
+                    </AssetItemBadges>
+                  )}
+
+                  <AssetItemMeta>
+                    <span>v{s.version}</span>
+                    <AssetItemTime>{new Date(s.updated_at_ms).toLocaleString()}</AssetItemTime>
+                  </AssetItemMeta>
+                </>
+              );
+            }}
+          />
+        }
+        detail={
           <SkillDetailPane skillName={selectedSkill?.name ?? null} skillId={selectedSkill?.skill_id} />
-        </section>
-      </div>
+        }
+      />
       )}
 
       {/* Modals (only for team/fixed tabs) */}
@@ -685,6 +667,7 @@ function PersonalAssetTab({
   /** 缓存版本号：每次有新 skill 被缓存后 +1，触发本组件重渲染以读取最新值。 */
   cacheVersion?: number;
 }) {
+  const { t } = useTranslation();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -755,13 +738,10 @@ function PersonalAssetTab({
     // Skill 数据面为软归档；meta asset 经钩子物理删除。前端按"彻底删除"描述。
     // Skill 按 owner_agent_id 独立 —— 删除只影响其所属 Agent，其他 Agent 的独立副本不受影响。
     const ok = await tea.confirm({
-      message: `确认彻底删除 Skill「${asset.name}」？`,
-      description:
-        '删除后该 Skill 将从所属 Agent 卸载，且不可恢复。' +
-        '其他 Agent 下同名的独立副本不受影响。' +
-        '如仅需临时停用，请考虑将其设为"私密"而非删除。',
-      okText: '彻底删除',
-      cancelText: '取消',
+      message: t('skills.personal.delete.confirm', { name: asset.name }),
+      description: t('skills.personal.delete.confirm.desc'),
+      okText: t('skills.personal.delete.okText'),
+      cancelText: t('skills.personal.delete.cancelText'),
     });
     if (!ok) return;
     setBusyId(asset.asset_id);
@@ -800,7 +780,7 @@ function PersonalAssetTab({
       }
       setAssets((prev) => prev.filter((a) => a.asset_id !== asset.asset_id));
       if (selectedAssetId === asset.asset_id) onSelectAsset?.(null);
-      tea.notify.success(`已删除 Skill「${asset.name}」`);
+      tea.notify.success(t('skills.personal.notify.deleted', { name: asset.name }));
     } catch (err) {
       tea.notify.error(err);
     } finally {
@@ -813,20 +793,20 @@ function PersonalAssetTab({
       <Card.Body>
         {/* 顶部 */}
         <div className="_memory-personal-header">
-          <Text theme="strong" parent="div">我的资产分配</Text>
+          <Text theme="strong" parent="div">{t('skills.personal.title')}</Text>
           <Text theme="weak" parent="div" className="_memory-personal-header-desc">
-            仅显示你是 owner 的资产 · 切换「共享 / 私密」决定其他 team 成员能否看到
+            {t('skills.personal.desc')}
           </Text>
         </div>
 
         {loading ? (
           <div className="_memory-personal-empty">
-            <Text theme="weak">加载中…</Text>
+            <Text theme="weak">{t('common.loading')}</Text>
           </div>
         ) : assets.length === 0 ? (
           <div className="_memory-personal-empty">
             <Text theme="weak" parent="div">
-              暂无你 owner 的{kind === 'skill' ? '技能' : '记忆'}资产 · 通过右上角「导入 Skill」新建
+              {t('skills.personal.empty', { kind: kind === 'skill' ? t('skills.personal.kind.skill') : t('skills.personal.kind.memory') })}
             </Text>
           </div>
         ) : (
@@ -858,54 +838,36 @@ function PersonalAssetTab({
                     <div className="_memory-personal-asset-id" title={asset.asset_id}>{asset.asset_id}</div>
                     <div className="_memory-personal-asset-badges">
                       {cachedAgentId && (
-                        <Tag theme="default" variant="soft" size="sm" shapeType="rectangle" className="_memory-skill-owner-tag">
-                          <span className="_memory-skill-tag-content" title={`owner agent: ${agentNameMap[cachedAgentId] ?? '(未知)'}（${cachedAgentId}）`}>
-                            <AppIcon size={10} /> {agentNameMap[cachedAgentId] ?? cachedAgentId}
-                          </span>
-                        </Tag>
+                        <span className="_skill-badge" title={t('skills.agentTag.title', { name: agentNameMap[cachedAgentId] ?? t('skills.agentTag.unknown'), id: cachedAgentId })}>
+                          <AppIcon size={10} /> {agentNameMap[cachedAgentId] ?? cachedAgentId}
+                        </span>
                       )}
                       {asset.owner_user_id && (
-                        <Tag theme="primary" variant="soft" size="sm" shapeType="rectangle" className="_memory-skill-owner-tag">
-                          <span className="_memory-skill-tag-content" title={`owner user: ${currentUserName || asset.owner_user_id}（${asset.owner_user_id}）`}>
-                            <UserIcon size={10} /> {currentUserName || asset.owner_user_id}
-                            {asset.owner_user_id === currentUser && '（你）'}
-                          </span>
-                        </Tag>
+                        <span className="_skill-badge" title={t('skills.ownerTag.title', { name: currentUserName || asset.owner_user_id, id: asset.owner_user_id })}>
+                          <UserIcon size={10} /> {currentUserName || asset.owner_user_id}
+                          {asset.owner_user_id === currentUser && <span className="_skill-badge-you">{t('skills.ownerTag.you')}</span>}
+                        </span>
                       )}
                       {!isTeam && !isPrivate && (
-                        <Tag theme="default" variant="outlined" size="sm" shapeType="rectangle" className="_memory-skill-state-tag">
-                          <span className="_memory-skill-tag-content">{asset.visibility}</span>
-                        </Tag>
+                        <span className="_skill-badge">{asset.visibility}</span>
                       )}
                     </div>
                   </div>
 
-                  {/* 操作行：共享/私密切换 + 删除。窄列下位于主信息下方，整行对齐。 */}
-                  <div className="_memory-personal-asset-controls">
-                    {/* 共享 / 私密切换：Tea Button 组，stopPropagation 避免触发行选中 */}
-                    <div className="_memory-personal-scope-switch" onClick={(e) => e.stopPropagation()}>
-                      <Button
-                        type={isTeam ? 'primary' : 'weak'}
-                        disabled={isBusy}
-                        onClick={() => void handleSetScope(asset, 'team')}
-                        tooltip="team 内成员可读；owner 和 admin 可写"
-                      >
-                        <ShareIcon size={12} /> 共享
-                      </Button>
-                      <Button
-                        type={isPrivate ? 'primary' : 'weak'}
-                        disabled={isBusy}
-                        onClick={() => void handleSetScope(asset, 'private')}
-                        tooltip="只有 owner 和 team admin 能看到"
-                      >
-                        <LockOnIcon size={12} /> 私密
-                      </Button>
-                    </div>
-
-                    {/* 删除：Tea 图标按钮（error 主题），二次确认在 handleDelete 内 */}
+                  {/* 操作行：共享/私密切换 + 删除 */}
+                  <div className="_memory-personal-asset-controls" onClick={(e) => e.stopPropagation()}>
+                    <Segment
+                      value={isTeam ? 'team' : 'private'}
+                      onChange={(v) => void handleSetScope(asset, v as 'team' | 'private')}
+                      disabled={isBusy}
+                      options={[
+                        { value: 'team', text: t('skills.personal.scope.shared') },
+                        { value: 'private', text: t('skills.personal.scope.private') },
+                      ]}
+                    />
                     <Button type="text"
                       disabled={isBusy}
-                      tooltip="彻底删除该 Skill（不可恢复）"
+                      tooltip={t('skills.personal.delete.tooltip')}
                       className="_memory-personal-asset-delete"
                       onClick={(e: any) => {
                         e?.stopPropagation();

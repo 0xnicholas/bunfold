@@ -328,10 +328,10 @@ export function canManageAsset(
   asset: { owner_user_id: string; team_id: string },
   team: Team | null | undefined,
   userId: string,
-  isGlobalAdminFlag?: boolean
+  _isGlobalAdminFlag?: boolean
 ): boolean {
   if (!userId) return false;
-  if (isGlobalAdminFlag) return true;
+  // admin 不再拥有全局特权，与 member 一致：只能操作自己 owner 的资产。
   if (asset.owner_user_id === userId) return true;
   if (team && team.team_id === asset.team_id && isTeamAdmin(team, userId)) return true;
   return false;

@@ -24,6 +24,7 @@ import { indexProject, openIndex, syncIndex, getStats, closeIndex, type CodeGrap
 import { SourceFetcherRegistry } from "./source-fetcher/index.js";
 import { createLogger } from "./logger.js";
 import type { LlmConfig } from "./config.js";
+import { AutoSyncScheduler, resolveAutoSyncConfig, type AutoSyncConfig } from "./store/auto-sync-scheduler.js";
 
 const log = createLogger("knowledge-module");
 
@@ -57,6 +58,10 @@ export interface KnowledgeModule {
   instancePool: CodeGraphInstancePool;
   /** Per-instance LLM routing binding (proxy/byo), keyed by service_id. */
   llmBindingStore: ILlmBindingStore;
+  /** 定时自动同步调度器（需显式 start/stop）。 */
+  autoSyncScheduler: AutoSyncScheduler;
+  /** 定时自动同步的解析后配置（挂载 admin 路由时透出）。 */
+  autoSyncConfig: AutoSyncConfig;
 }
 
 /**
@@ -266,5 +271,12 @@ export function createKnowledgeModule(config: KnowledgeModuleConfig): KnowledgeM
     }
   })();
 
-  return { wikiService, cgService, wikiMgr, store, instancePool, llmBindingStore };
+  // ── AutoSync Scheduler: 定时拉取 git 仓库并更新 codegraph 索引 ──
+  const autoSyncConfig = resolveAutoSyncConfig();
+  const autoSyncScheduler = new AutoSyncScheduler({
+    store, cgService, config: autoSyncConfig,
+  });
+  autoSyncScheduler.start();
+
+  return { wikiService, cgService, wikiMgr, store, instancePool, llmBindingStore, autoSyncScheduler, autoSyncConfig };
 }

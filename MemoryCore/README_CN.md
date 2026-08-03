@@ -141,7 +141,7 @@ docker run --rm \
 从仓库根目录执行：
 
 ```bash
-bash MemoryCore/scripts/install-openclaw-plugin-v2.sh
+bash MemoryCore/scripts/install-openclaw-plugin.sh
 ```
 
 常用连接参数：

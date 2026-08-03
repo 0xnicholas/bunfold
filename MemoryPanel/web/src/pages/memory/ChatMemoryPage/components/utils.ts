@@ -1,4 +1,5 @@
 import type { MemoryBlock, MemoryLayer } from './types';
+import i18n from '@/i18n';
 
 /**
  * ISO 时间字符串 → 面板展示格式（本地时区，'YYYY-MM-DD HH:MM'）。
@@ -27,7 +28,7 @@ export function formatShortTime(ms: number): string {
     yesterday.getFullYear() === d.getFullYear() &&
     yesterday.getMonth() === d.getMonth() &&
     yesterday.getDate() === d.getDate()
-  ) return '昨天';
+  ) return i18n.t('common.yesterday');
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 

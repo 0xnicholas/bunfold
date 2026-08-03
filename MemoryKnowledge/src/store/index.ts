@@ -75,3 +75,6 @@ export type {
   PageRmResult,
   WriteOutcome,
 } from "./wiki-service.js";
+
+export { AutoSyncScheduler, resolveAutoSyncConfig } from "./auto-sync-scheduler.js";
+export type { AutoSyncConfig, AutoSyncSchedulerDeps } from "./auto-sync-scheduler.js";

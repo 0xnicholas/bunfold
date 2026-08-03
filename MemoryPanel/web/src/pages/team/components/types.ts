@@ -65,15 +65,6 @@ export function emptyMountedCounts(): AgentMountedCounts {
   return { skills: 0, code_graph: 0, llm_wiki: 0, chat_memory: 0 };
 }
 
-export const ACCENT_STYLES: Record<AgentCard['accent'], { bg: string; text: string }> = {
-  blue: { bg: '_memory-accent-blue', text: '_memory-accent-blue-text' },
-  purple: { bg: '_memory-accent-purple', text: '_memory-accent-purple-text' },
-  orange: { bg: '_memory-accent-orange', text: '_memory-accent-orange-text' },
-  emerald: { bg: '_memory-accent-emerald', text: '_memory-accent-emerald-text' },
-  rose: { bg: '_memory-accent-rose', text: '_memory-accent-rose-text' },
-  slate: { bg: '_memory-accent-slate', text: '_memory-accent-slate-text' },
-};
-
 /** 移除成员权限：全局 admin / team owner / team admin 可以移除非 owner 成员；owner 不可被移除（含全局 admin）。 */
 export function canRemoveMember(
   team: Team,

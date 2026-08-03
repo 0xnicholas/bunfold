@@ -10,6 +10,7 @@
 
 import { getPanelSession } from './panelSession';
 import { formatApiErrorMessage } from './error-message';
+import i18n from '@/i18n';
 
 // ========================= Envelope =========================
 
@@ -117,7 +118,7 @@ async function skillCall<T>(action: string, body: Record<string, unknown>): Prom
     body: JSON.stringify(stripEmpty(body)),
   });
   if (res.status === 401) {
-    throw new SkillApiError(401, 'Unauthorized - 用户登录已失效或缺少用户密钥', '');
+    throw new SkillApiError(401, i18n.t('skillApi.error.unauthorized'), '');
   }
   const text = await res.text();
   let envelope: SkillEnvelope<T>;

@@ -244,11 +244,15 @@ export function extractFromOptionText(
   if (!agentId) agentId = matchAgentInTeam(content, team);
   if (!agentId) return null;
 
-  // Resolve task
+  // Resolve task。defaultTaskId 兜底通过 fetchTeamsAndAgents 头部注入实现：
+  // 用户选中"本次不关联任务"label 会 matchTaskInTeam 命中虚拟条目返回
+  // defaultTaskId，无需在此单独处理。SKIP_RE 兜底放到 match 失败之后，避免
+  // 虚拟条目的"不关联"文案误伤。
   let taskId: string | undefined;
   const taskHay = taskText ?? content;
-  if (!SKIP_RE.test(taskHay)) {
-    taskId = matchTaskInTeam(taskHay, team);
+  taskId = matchTaskInTeam(taskHay, team);
+  if (!taskId && SKIP_RE.test(taskHay)) {
+    taskId = undefined; // 显式手打"跳过"→ 保持 undefined（走 completeRegistration bypass）
   }
 
   return { agent_id: agentId, task_id: taskId };

@@ -6,17 +6,16 @@
  *   1. 列出/创建/管理本团队下的 task；
  *   2. 通过 log tab 看 task 历史记录。
  *
- * 项目管理类的统计、配置中心、PR/issue 看板都已移除。
+ * 布局：进入页面为全宽卡片网格（风格对齐 Agents / Wiki 卡片），不再左右分栏；
+ * 点击卡片拉出 Drawer，在抽屉内查看详情与设置（改状态、编辑标题/描述、删除）。
  *
  * 数据走后端链路 A（services/backendStore.ts，内部调用 @/lib/teamApi 的 meta 接口）。
- *
- * Tea 组件重构版：左右主从布局改用 Card + List，编辑区改用 Input / Segment /
- * Checkbox，状态提示统一走 tea-bridge，去除所有 emoji 与自定义 Tailwind 圆角卡片。
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Tag, Card, List, Text, Input } from 'tea-component';
-import { AddIcon, DeleteIcon, EditIcon, UserIcon, UsergroupIcon } from 'tea-icons-react';
+import { useTranslation } from 'react-i18next';
+import { Button, Card, Drawer, Tag, Text, Input, Segment, Pagination } from 'tea-component';
+import { AddIcon, ChevronRightIcon, DeleteIcon, EditIcon, UserIcon, UsergroupIcon } from 'tea-icons-react';
 import {
   useTasks,
   useTeams,
@@ -31,6 +30,7 @@ import {
 } from '@/services';
 import { participationLogsApi } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
+import { TeamHeaderCard } from '@/pages/team/components/TeamHeaderCard';
 import TaskCreateDialog, { type TaskDraft } from './TaskCreateDialog';
 import './task-workbench.css';
 
@@ -43,16 +43,13 @@ function errMsg(e: unknown): string {
 // Task 状态在演示阶段简化为二态：进行中 / 已完成。
 // 历史的 待处理 / 阻塞 / 已归档 已下线（参见 backendStore.ts 里的 normalizeTaskStatus）。
 
-const STATUS_LABEL: Record<Task['status'], string> = {
-  running: '进行中',
-  completed: '已完成'
-};
-
-// Tag 组件合法 theme: default/primary/success/warning/error
-const STATUS_THEME: Record<Task['status'], 'primary' | 'success'> = {
-  running: 'primary',
-  completed: 'success'
-};
+function useStatusLabels() {
+  const { t } = useTranslation();
+  return {
+    running: t('task.status.running'),
+    completed: t('task.status.completed'),
+  };
+}
 
 interface AgentOption {
   id: string;
@@ -145,15 +142,22 @@ export default function TaskWorkbench(props: {
   currentUser: string;
   /** 当前 team 下可关联的 Agent 列表（来自 TeamManagementPanel 的同源数据） */
   agents: AgentOption[];
-  /** 是否为全局 admin */
+  /** 是否为全局 admin（保留接口兼容；admin 不再有 task 特权） */
   isAdmin?: boolean;
 }) {
-  const { activeTeamId, currentUser, agents, isAdmin } = props;
-  const tasks = useTasks(activeTeamId);
+  const { t } = useTranslation();
+  const { activeTeamId, currentUser, agents } = props;
+  // 后端分页：useTasks 根据 page + pageSize 调 Panel 聚合接口，内核只返回当前页
+  const PAGE_SIZE = 12;
+  const [currentPage, setCurrentPage] = useState(1);
+  const { tasks, total: tasksTotal, loading: tasksLoading } = useTasks(activeTeamId, currentPage, PAGE_SIZE);
   const { teams, activeTeam } = useTeams();
   const participationByTask = useTeamParticipation(activeTeamId);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // 切换 team 时重置到第 1 页
+  useEffect(() => { setCurrentPage(1); }, [activeTeamId]);
 
   const sortedTasks = useMemo(() => {
     return [...tasks].sort((a, b) => b.updated_at_ms - a.updated_at_ms);
@@ -172,11 +176,11 @@ export default function TaskWorkbench(props: {
     // 谁点击「创建 Task」，谁就是 creator_user_id。
     const team = teams.find((t) => t.team_id === draft.team_id);
     if (!team) {
-      tea.notify.error(`team「${draft.team_id}」不存在，无法创建 task。`);
+      tea.notify.error(`team "${draft.team_id}" ${t('task.emptyTeam.title')}`);
       return;
     }
     try {
-      const t = await createTask({
+      const task = await createTask({
         team_id: draft.team_id,
         creator_user_id: currentUser,
         title: draft.title,
@@ -185,7 +189,7 @@ export default function TaskWorkbench(props: {
         source_url: draft.source_url,
         linked_agents: draft.linked_agents
       });
-      setSelectedId(t.task_id);
+      setSelectedId(task.task_id);
       setShowCreate(false);
     } catch (err) {
       tea.notify.error(errMsg(err));
@@ -197,25 +201,33 @@ export default function TaskWorkbench(props: {
       {!activeTeamId ? (
         <EmptyTeam />
       ) : (
-        <BoardView
+        <>
+          {/* 当前 team 概览（与 team 管理页同一组件） */}
+          {activeTeam && <TeamHeaderCard team={activeTeam} />}
+          <BoardView
           tasks={sortedTasks}
+          tasksLoading={tasksLoading}
+          tasksTotal={tasksTotal}
+          currentPage={currentPage}
+          setCurrentPage={setCurrentPage}
+          pageSize={PAGE_SIZE}
           selected={selected}
           onSelect={(id) => setSelectedId(id)}
           onCreate={() => setShowCreate(true)}
           onDelete={async (task) => {
             // 权限：删除 task 仅创建者 / team admin / 全局 admin
             const team = teams.find((t) => t.team_id === task.team_id) ?? null;
-            if (!canDeleteTask(task, team, currentUser) && !isAdmin) {
+            if (!canDeleteTask(task, team, currentUser)) {
               tea.notify.warning(
-                `你不是 task「${task.title}」的创建者，也不是 team 管理员，无法删除。创建者: ${task.creator_user_id}`
+                t('task.delete.noPermission', { title: task.title, creator: task.creator_user_id })
               );
               return;
             }
             const ok = await tea.confirm({
-              message: `确认删除 task「${task.title}」？`,
-              description: `Task ID: ${task.task_id}`,
-              okText: '删除',
-              cancelText: '取消',
+              message: t('task.delete.confirm', { title: task.title }),
+              description: t('task.delete.description', { id: task.task_id }),
+              okText: t('task.delete.okText'),
+              cancelText: t('task.delete.cancelText'),
             });
             if (ok) {
               try {
@@ -229,8 +241,8 @@ export default function TaskWorkbench(props: {
           onUpdateStatus={async (task, status) => {
             // 权限：编辑 task（含切换 status）允许 team 内任意 member / admin
             const team = teams.find((t) => t.team_id === task.team_id) ?? null;
-            if (!canEditTask(task, team, currentUser) && !isAdmin) {
-              tea.notify.warning('你不是该 team 的成员，无权修改此 task。');
+            if (!canEditTask(task, team, currentUser)) {
+              tea.notify.warning(t('task.noPermissionEdit'));
               return;
             }
             try {
@@ -241,8 +253,8 @@ export default function TaskWorkbench(props: {
           }}
           onUpdateTask={async (task, patch) => {
             const team = teams.find((t) => t.team_id === task.team_id) ?? null;
-            if (!canEditTask(task, team, currentUser) && !isAdmin) {
-              tea.notify.warning('你不是该 team 的成员，无权修改此 task。');
+            if (!canEditTask(task, team, currentUser)) {
+              tea.notify.warning(t('task.noPermissionEdit'));
               return;
             }
             try {
@@ -254,9 +266,9 @@ export default function TaskWorkbench(props: {
           agents={agents}
           teams={teams}
           currentUser={currentUser}
-          isAdmin={isAdmin}
           participationByTask={participationByTask}
-        />
+          />
+        </>
       )}
 
       {showCreate && activeTeam && (
@@ -275,12 +287,13 @@ export default function TaskWorkbench(props: {
 // ============= Sub views =============
 
 function EmptyTeam() {
+  const { t } = useTranslation();
   return (
     <Card>
       <Card.Body className="_memory-workbench-empty-card">
-        <Text theme="strong" className="_memory-workbench-empty-title">还没有可用的 Team</Text>
+        <Text theme="strong" className="_memory-workbench-empty-title">{t('task.emptyTeam.title')}</Text>
         <Text theme="weak" className="_memory-workbench-empty-desc">
-          请先在「团队管理」里创建一个 team，再回到工作台创建 task。
+          {t('task.emptyTeam.desc')}
         </Text>
       </Card.Body>
     </Card>
@@ -289,6 +302,11 @@ function EmptyTeam() {
 
 function BoardView({
   tasks,
+  tasksLoading,
+  tasksTotal,
+  currentPage,
+  setCurrentPage,
+  pageSize,
   selected,
   onSelect,
   onCreate,
@@ -298,12 +316,16 @@ function BoardView({
   agents,
   teams,
   currentUser,
-  isAdmin,
   participationByTask,
 }: {
   tasks: Task[];
+  tasksLoading: boolean;
+  tasksTotal: number;
+  currentPage: number;
+  setCurrentPage: (page: number) => void;
+  pageSize: number;
   selected: Task | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onCreate: () => void;
   onDelete: (task: Task) => void;
   onUpdateStatus: (task: Task, status: Task['status']) => void;
@@ -311,121 +333,150 @@ function BoardView({
   agents: AgentOption[];
   teams: Team[];
   currentUser: string;
-  isAdmin?: boolean;
   participationByTask: Map<string, TaskParticipationView>;
 }) {
+  const { t } = useTranslation();
+  const statusLabels = useStatusLabels();
+  const selectedTeam = selected ? teams.find((x) => x.team_id === selected.team_id) ?? null : null;
+
+  // 后端分页：useTasks 已只返回当前页数据，不需要前端切片
+  const totalPages = Math.max(1, Math.ceil(tasksTotal / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedTasks = tasks;
   return (
-    <div className="_memory-workbench-split">
-      {/* Left: task list */}
-      <div className="_memory-workbench-list">
-        <Card className="_memory-workbench-card">
-          <Card.Body className="_memory-workbench-list-body">
-            <div className="_memory-workbench-list-header">
-              <Text theme="strong">Task 列表</Text>
-              <Button type="primary" onClick={onCreate}>
-                <AddIcon size={14} />
-                新建 Task
-              </Button>
-            </div>
-            {tasks.length === 0 ? (
-              <div className="_memory-workbench-list-empty">
-                <Text theme="weak">暂无 task。点击右上角「新建 Task」创建第一个。</Text>
-              </div>
-            ) : (
-              <List split="divide" className="_memory-workbench-list-items">
-                {tasks.map((t) => {
-                  const active = selected?.task_id === t.task_id;
-                  const team = teams.find((x) => x.team_id === t.team_id) ?? null;
-                  const canDelete = canDeleteTask(t, team, currentUser) || isAdmin;
-                  // 参与者 / agent 数字统一来自 participation-log 观测——
-                  // 老的 t.participants (metadata.ui) 和 t.linked_agents (task-agent/link)
-                  // 不再展示。
-                  const view = participationOf(participationByTask, t.task_id);
-                  const imParticipant = view.users.includes(currentUser);
-                  const agentNameById = new Map(agents.map((a) => [a.id, a.name]));
-                  const agentLabels = view.agentIds.map((id) => agentNameById.get(id) ?? id);
-                  return (
-                    <List.Item
-                      key={t.task_id}
-                      selected={active}
-                      onClick={() => onSelect(t.task_id)}
-                      className="_memory-workbench-item"
-                    >
-                      <div className="_memory-workbench-item-top">
-                        <Tag theme={STATUS_THEME[t.status]} variant="soft">
-                          {STATUS_LABEL[t.status]}
-                        </Tag>
-                        {/* task_id 全局唯一，列表上也亮出来；rename / 同名 task 时唯一定位都靠它 */}
-                        <Text theme="weak" className="_memory-mono _memory-workbench-item-id" tooltip={t.task_id}>
-                          {t.task_id}
-                        </Text>
-                        {canDelete && (
-                          <Button type="text"
-                            tooltip="删除该 Task"
-                            className="_memory-workbench-item-delete"
-                            onClick={(e) => {
-                              e?.stopPropagation();
-                              onDelete(t);
-                            }}
-                          >
-                            <DeleteIcon size={14} />
-                          </Button>
-                        )}
-                      </div>
-                      <div className="_memory-workbench-item-title">{t.title}</div>
-                      <p className="_memory-workbench-item-desc">{t.description}</p>
-                      <div className="_memory-workbench-item-meta">
-                        {/* 参与者徽章：来源 participation-log 去重后的实际起过
-                            session 的 user 集合；hover 看完整 user_id 列表 */}
-                        <span
-                          className="_memory-workbench-badge"
-                          title={view.users.length === 0 ? '暂无实际参与的 user' : `实际参与 User：\n${view.users.join('\n')}`}
-                        >
-                          <UsergroupIcon size={12} />
-                          {view.users.length} 人
-                          {imParticipant && <Tag theme="warning" variant="soft" size="sm">含你</Tag>}
-                        </span>
-                        {/* agent 数字同源 —— 实际起过 session 的 agent 去重后个数；
-                            hover 看完整 agent name / agent_id 兜底 */}
-                        <span title={agentLabels.length === 0 ? '暂无实际参与的 Agent' : `实际参与 Agent：\n${agentLabels.join('\n')}`}>
-                          {agentLabels.length} 个 Agent
-                        </span>
-                        <span className="_memory-workbench-item-time">
-                          {new Date(t.updated_at_ms).toLocaleString()}
-                        </span>
-                      </div>
-                    </List.Item>
-                  );
-                })}
-              </List>
-            )}
-          </Card.Body>
-        </Card>
+    <div className="_memory-panel-card">
+      {/* 头部：复用 members / agents 的 Section 通用头部（标题 + 计数 Tag + 副标题 + 右侧操作） */}
+      <div className="_memory-section-header">
+        <div className="_memory-section-header-info">
+          <div className="_memory-section-header-title-row">
+            <div className="_memory-section-title">{t('task.list.title')}</div>
+            <Tag size="sm">{t('task.list.count', { count: tasksTotal })}</Tag>
+          </div>
+          <div className="_memory-section-subtitle">{t('task.list.subtitle')}</div>
+        </div>
+        <Button type="primary" onClick={onCreate}>
+          <AddIcon size={14} />
+          {t('task.create')}
+        </Button>
       </div>
 
-      {/* Right: detail */}
-      <div className="_memory-workbench-detail">
-        <Card className="_memory-workbench-card">
-          <Card.Body className="_memory-workbench-detail-body">
-            {!selected ? (
-              <div className="_memory-workbench-detail-empty">
-                <Text theme="weak">在左侧选中一条 task，或点击「新建 Task」开始一个新任务。</Text>
-              </div>
-            ) : (
-              <TaskDetail
-                task={selected}
-                onUpdateStatus={(s) => onUpdateStatus(selected, s)}
-                onUpdateTask={(patch) => onUpdateTask(selected, patch)}
-                agents={agents}
-                team={teams.find((t) => t.team_id === selected.team_id) ?? null}
-                currentUser={currentUser}
-                isAdmin={isAdmin}
-                participation={participationOf(participationByTask, selected.task_id)}
-              />
+      {tasksLoading && tasks.length === 0 ? (
+        // 首屏加载骨架屏：6 个占位卡片 + shimmer 动画
+        <div className="_memory-workbench-skeleton-grid" aria-label="loading">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="_memory-workbench-skeleton-card">
+              <div className="_memory-workbench-skeleton-line _memory-workbench-skeleton-line--title" />
+              <div className="_memory-workbench-skeleton-line _memory-workbench-skeleton-line--desc" />
+              <div className="_memory-workbench-skeleton-line _memory-workbench-skeleton-line--meta" />
+            </div>
+          ))}
+        </div>
+      ) : tasks.length === 0 ? (
+        <div className="_memory-workbench-list-empty">
+          <Text theme="weak">{t('task.empty')}</Text>
+        </div>
+      ) : (
+        <div className="_memory-workbench-task-grid">
+          {pagedTasks.map((task) => {
+            const view = participationOf(participationByTask, task.task_id);
+            const imParticipant = view.users.includes(currentUser);
+            const agentNameById = new Map(agents.map((a) => [a.id, a.name]));
+            const agentLabels = view.agentIds.map((id) => agentNameById.get(id) ?? id);
+            return (
+              <button
+                type="button"
+                key={task.task_id}
+                className="_memory-workbench-task-card"
+                onClick={() => onSelect(task.task_id)}
+              >
+                {/* 标题行：状态 pill + 标题 + 箭头 */}
+                <div className="_memory-workbench-task-card-head">
+                  <span className={`_memory-workbench-status-pill _memory-workbench-status-pill--${task.status}`}>
+                    {statusLabels[task.status]}
+                  </span>
+                  <span className="_memory-workbench-task-card-title" title={task.title}>{task.title}</span>
+                  <ChevronRightIcon size={14} className="_memory-workbench-task-card-chevron" />
+                </div>
+
+                {/* 描述 */}
+                {task.description && (
+                  <p className="_memory-workbench-task-card-desc">{task.description}</p>
+                )}
+
+                {/* 元信息行：参与者 · Agent · 时间 */}
+                <div className="_memory-workbench-task-card-meta">
+                  <span
+                    className="_memory-workbench-meta-item"
+                    title={view.users.length === 0 ? t('task.participants.empty') : t('task.participants.tooltip', { users: view.users.join('\n') })}
+                  >
+                    <UsergroupIcon size={12} />
+                    {t('task.peopleCount', { count: view.users.length })}
+                    {imParticipant && <span className="_memory-workbench-meta-you">{t('common.you2')}</span>}
+                  </span>
+                  <span
+                    className="_memory-workbench-meta-item"
+                    title={agentLabels.length === 0 ? t('task.agents.empty') : t('task.agents.tooltip', { agents: agentLabels.join('\n') })}
+                  >
+                    {t('task.agentCount', { count: agentLabels.length })}
+                  </span>
+                  <span className="_memory-workbench-task-card-time">
+                    {new Date(task.updated_at_ms).toLocaleString()}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 分页：超过 1 页才展示 */}
+      {totalPages > 1 && (
+        <div className="_memory-workbench-pagination">
+          <Pagination
+            pageIndex={safePage}
+            pageSize={pageSize}
+            recordCount={tasksTotal}
+            pageSizeVisible={false}
+            onPagingChange={(query) => {
+              if (query.pageIndex) setCurrentPage(query.pageIndex);
+            }}
+          />
+        </div>
+      )}
+
+      {/* 详情抽屉：设置（状态 / 编辑 / 删除）都在抽屉内完成 */}
+      <Drawer
+        visible={!!selected}
+        size="l"
+        onClose={() => onSelect(null)}
+        title={selected?.title}
+        subtitle={selected && (
+          <span className="_memory-workbench-drawer-subtitle">
+            <span className="_memory-mono">{selected.task_id}</span>
+            {selectedTeam && (
+              <>
+                <span className="_memory-workbench-meta-sep">·</span>
+                {selectedTeam.name}
+              </>
             )}
-          </Card.Body>
-        </Card>
-      </div>
+          </span>
+        )}
+        destroyOnClose
+      >
+        {selected && (
+          <TaskDetail
+            task={selected}
+            onUpdateStatus={(s) => onUpdateStatus(selected, s)}
+            onUpdateTask={(patch) => onUpdateTask(selected, patch)}
+            onDelete={() => onDelete(selected)}
+            canDelete={canDeleteTask(selected, selectedTeam, currentUser)}
+            agents={agents}
+            team={selectedTeam}
+            currentUser={currentUser}
+            participation={participationOf(participationByTask, selected.task_id)}
+          />
+        )}
+      </Drawer>
     </div>
   );
 }
@@ -434,25 +485,30 @@ function TaskDetail({
   task,
   onUpdateStatus,
   onUpdateTask,
+  onDelete,
+  canDelete,
   agents,
   team,
   currentUser,
-  isAdmin,
   participation,
 }: {
   task: Task;
   onUpdateStatus: (s: Task['status']) => void;
   onUpdateTask: (patch: Partial<Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>>) => void;
+  /** 删除当前 task（权限校验与二次确认由外层统一处理） */
+  onDelete: () => void;
+  canDelete: boolean;
   agents: AgentOption[];
   /** 当前 task 所属 team — 可能为 null（理论上不会，但 team 被删除场景需兜底） */
   team: Team | null;
   currentUser: string;
-  isAdmin?: boolean;
   /** 从 useTeamParticipation 分桶后传下来的当前 task 观测数据 */
   participation: TaskParticipationView;
 }) {
-  // PRD §10：编辑权限。team 内任意 member 可改 task（含切换 status）；admin 全权限。
-  const canEdit = canEditTask(task, team, currentUser) || isAdmin;
+  const { t } = useTranslation();
+  const statusLabels = useStatusLabels();
+  // PRD §10：编辑权限。team 内任意 member 可改 task（含切换 status）。
+  const canEdit = canEditTask(task, team, currentUser);
 
   // —— 编辑态：只在用户点「编辑」后才进入；草稿独立维护，取消即丢弃 —— //
   const [editing, setEditing] = useState(false);
@@ -478,7 +534,7 @@ function TaskDetail({
     const patch: Partial<Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>> = {};
     const title = draftTitle.trim();
     if (title.length === 0) {
-      tea.notify.warning('任务标题不能为空。');
+      tea.notify.warning(t('task.titleRequired'));
       return;
     }
     if (title !== task.title) patch.title = title;
@@ -507,85 +563,56 @@ function TaskDetail({
 
   return (
     <div className="_memory-workbench-detail-content">
-      {/* === Header === */}
-      <div className="_memory-workbench-detail-header">
-        <div className="_memory-workbench-detail-title-col">
-          {editing ? (
+      {/* === 工具行：编辑 + 状态切换（标题 / task_id / team 已在抽屉头部展示） === */}
+      <div className="_memory-workbench-detail-toolbar">
+        {editing ? (
+          <>
             <Input
               value={draftTitle}
               onChange={setDraftTitle}
-              placeholder="任务标题"
+              placeholder={t('task.titlePlaceholder')}
               size="full"
               className="_memory-workbench-title-input"
             />
-          ) : (
-            <Text theme="strong" className="_memory-workbench-detail-title">{task.title}</Text>
-          )}
-          <div className="_memory-workbench-detail-meta">
-            <Text theme="weak">task_id：</Text>
-            <Text theme="text" className="_memory-mono">{task.task_id}</Text>
-            <span className="_memory-workbench-meta-sep">·</span>
-            <Text theme="weak">team：</Text>
-            {team ? (
-              <>
-                <Text theme="text">{team.name}</Text>
-                <Text theme="weak" className="_memory-mono">（{team.team_id}）</Text>
-              </>
-            ) : (
-              <Text theme="weak" className="_memory-mono">{task.team_id} · 已删除</Text>
+            <Button onClick={cancelEdit}>{t('common.cancel')}</Button>
+            <Button type="primary" onClick={saveEdit}>{t('task.save')}</Button>
+          </>
+        ) : (
+          <>
+            {canEdit && (
+              <Button type="text" onClick={startEdit} tooltip={t('task.edit.tooltip')}>
+                <EditIcon size={14} />
+                {t('task.edit')}
+              </Button>
             )}
-          </div>
-        </div>
-        <div className="_memory-workbench-detail-actions">
-          {/* 编辑按钮：仅 team 成员可见可点；编辑态下隐藏，由保存/取消替代 */}
-          {!editing && canEdit && (
-            <Button onClick={startEdit} tooltip="编辑任务详情（标题、描述）">
-              <EditIcon size={14} />
-              编辑
-            </Button>
-          )}
-          {editing && (
-            <>
-              <Button onClick={cancelEdit}>取消</Button>
-              <Button type="primary" onClick={saveEdit}>保存</Button>
-            </>
-          )}
-          <div className="_memory-workbench-status-switch" title={canEdit ? '切换任务状态（你会被加入参与者）' : '仅 team 成员可切换 task 状态'}>
-            {(Object.keys(STATUS_LABEL) as Task['status'][]).map((s) => {
-              const active = task.status === s;
-              return (
-                <Button
-                  key={s}
-                  disabled={!canEdit || editing}
-                  type={active ? 'primary' : 'weak'}
-                  onClick={() => onUpdateStatus(s)}
-                >
-                  {STATUS_LABEL[s]}
-                </Button>
-              );
-            })}
-          </div>
-        </div>
+            <Segment
+              value={task.status}
+              onChange={(v) => onUpdateStatus(v as Task['status'])}
+              disabled={!canEdit}
+              options={(Object.keys(statusLabels) as Task['status'][]).map((s) => ({
+                value: s,
+                text: statusLabels[s],
+              }))}
+            />
+          </>
+        )}
       </div>
 
-      {/* === 创建者 + 参与的 User + 实际参与 Agent ===
-          创建者：演示阶段 = team admin（创建 task 时自动取 team.owner_user_id）。
-          参与的 User / Agent：来源 participation-log 观测，proxy session init
-          完成时 fire-and-forget append 到内核；append-only 语义，前端按 Set 去重。 */}
+      {/* === 参与者 === */}
       <div className="_memory-workbench-people">
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">创建者</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">{t('task.creator')}</Text>
           <span
             className="_memory-workbench-chip"
-            title="创建者（默认 = team admin）；仅创建者或 team 管理员可删除本 task"
+            title={t('task.creator.tooltip')}
           >
             <UserIcon size={12} />
             <Text theme="text">{task.creator_user_id}</Text>
-            {task.creator_user_id === currentUser && <Tag theme="warning" variant="soft" size="sm">你</Tag>}
+            {task.creator_user_id === currentUser && <span className="_memory-workbench-chip-you">{t('common.you.short')}</span>}
           </span>
         </div>
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">参与的 User</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">{t('task.participantUsers')}</Text>
           {participantUsers.length === 0 ? (
             <Text theme="weak">—</Text>
           ) : (
@@ -593,17 +620,17 @@ function TaskDetail({
               <span
                 key={u}
                 className="_memory-workbench-chip"
-                title="参与者：通过 proxy 起过 session 的 user（含 creator 自己开工）"
+                title={t('task.participantUsers.tooltip')}
               >
                 <UserIcon size={12} />
                 <Text theme="text">{u}</Text>
-                {u === currentUser && <Tag theme="warning" variant="soft" size="sm">你</Tag>}
+                {u === currentUser && <span className="_memory-workbench-chip-you">{t('common.you.short')}</span>}
               </span>
             ))
           )}
         </div>
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">实际参与 Agent</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">{t('task.sessionAgents')}</Text>
           {sessionAgents.length === 0 ? (
             <Text theme="weak">—</Text>
           ) : (
@@ -611,7 +638,7 @@ function TaskDetail({
               <span
                 key={a.id}
                 className="_memory-workbench-chip"
-                title={`proxy 侧观测到起过 session 的 agent · agent_id=${a.id}`}
+                title={t('task.sessionAgents.tooltip', { id: a.id })}
               >
                 <UsergroupIcon size={12} />
                 <Text theme="text">{a.name}</Text>
@@ -623,26 +650,32 @@ function TaskDetail({
 
       {/* === 描述 === */}
       <div className="_memory-workbench-block">
-        <Text theme="label" className="_memory-workbench-block-label">任务描述</Text>
+        <Text theme="label" className="_memory-workbench-block-label">{t('task.description')}</Text>
         {editing ? (
           <Input.TextArea
             value={draftDesc}
             onChange={setDraftDesc}
             rows={6}
             size="full"
-            placeholder="包含背景、目标、验收标准…"
+            placeholder={t('task.descriptionPlaceholder')}
           />
         ) : (
-          <pre className="_memory-workbench-desc-view">{task.description}</pre>
+          <div className="_memory-workbench-desc-view">{task.description}</div>
         )}
       </div>
 
-      {/* 关联 Agent 分区已下线：改为顶部 "实际参与 Agent" 展示 session 观测；
-          task-agent/link 的人工声明关系不再在此页面展示。 */}
-
       <Text theme="weak" className="_memory-workbench-footer">
-        创建：{new Date(task.created_at_ms).toLocaleString()} · 更新：{new Date(task.updated_at_ms).toLocaleString()}
+        {t('task.footer', { created: new Date(task.created_at_ms).toLocaleString(), updated: new Date(task.updated_at_ms).toLocaleString() })}
       </Text>
+
+      {/* === 危险操作 === */}
+      {canDelete && (
+        <div className="_memory-workbench-danger">
+          <Button type="error" onClick={onDelete}>
+            <DeleteIcon size={12} /> {t('task.delete.okText')}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

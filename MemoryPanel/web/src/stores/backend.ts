@@ -4,7 +4,7 @@
  * 取代 backendStore.ts 里的模块级变量（_cachedTeams / _cachedAgentsMap / _inflightTeams …）。
  *
  * 核心设计：
- *   - teamsLoaded / agentsLoadedTeamIds / tasksLoadedTeamIds：标记"已加载过"，
+ *   - teamsLoaded / agentsLoadedTeamIds：标记"已加载过"，
  *     避免每个组件挂载都重复 fetch。
  *   - invalidate()：写操作后调，清所有缓存 + 广播 BACKEND_REFRESH_EVENT。
  *   - invalidateTeam(teamId)：切 team 时只清当前 team 的 agents/tasks 缓存。
@@ -21,6 +21,7 @@ import {
   type TeamMember as BackendMember,
 } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
+import i18n from '@/i18n';
 import { seedDisplayNameCache } from '@/services/user-profile-store';
 
 // 从 backendStore.ts re-import 纯函数（adapters / types），避免循环依赖
@@ -53,21 +54,25 @@ interface BackendState {
   teams: Team[];
   activeTeamId: string | null;
   agentsByTeam: Record<string, Agent[]>;
-  tasksByTeam: Record<string, Task[]>;
+  // 全量总数（内核返回的 total），前端分页基于此计算总页数
+  tasksTotalByTeam: Record<string, number>;
+  // 后端分页缓存：tasksPagesByTeam[teamId]["offset:limit"] = Task[]
+  tasksPagesByTeam: Record<string, Record<string, Task[]>>;
   // loaded 标记（避免重复 fetch）
   teamsLoaded: boolean;
   teamsLoading: boolean;
   agentsLoadedTeamIds: Set<string>;
-  tasksLoadedTeamIds: Set<string>;
   // in-flight 去重
   inflightTeams: Promise<void> | null;
   inflightAgents: Record<string, Promise<Agent[]>>;
-  inflightTasks: Record<string, Promise<Task[]>>;
+  inflightTasks: Record<string, Promise<Task[]> | undefined>;
 
   // actions
   fetchTeams: () => Promise<void>;
+  /** 强制重新拉取 team 列表（忽略 teamsLoaded 缓存，保留 in-flight 去重） */
+  refreshTeams: () => Promise<void>;
   fetchAgents: (teamId: string) => Promise<Agent[]>;
-  fetchTasks: (teamId: string) => Promise<Task[]>;
+  fetchTasks: (teamId: string, params?: { limit?: number; offset?: number; force?: boolean }) => Promise<Task[]>;
   setActiveTeamId: (teamId: string | null) => void;
   invalidate: () => void;
   invalidateTeam: (teamId: string) => void;
@@ -80,11 +85,11 @@ export const useBackendStore = create<BackendState>((set, get) => ({
   teams: [],
   activeTeamId: readActiveTeamId(),
   agentsByTeam: {},
-  tasksByTeam: {},
+  tasksTotalByTeam: {},
+  tasksPagesByTeam: {},
   teamsLoaded: false,
   teamsLoading: false,
   agentsLoadedTeamIds: new Set(),
-  tasksLoadedTeamIds: new Set(),
   inflightTeams: null,
   inflightAgents: {},
   inflightTasks: {},
@@ -93,6 +98,11 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     const state = get();
     // 已加载过 → 不重复 fetch（只有 invalidate / clearAll 后才会重新拉）
     if (state.teamsLoaded) return;
+    await get().refreshTeams();
+  },
+
+  refreshTeams: async () => {
+    const state = get();
     // in-flight 去重：多个组件同时挂载时只发一次
     if (state.inflightTeams) { await state.inflightTeams; return; }
 
@@ -116,9 +126,9 @@ export const useBackendStore = create<BackendState>((set, get) => ({
           activeTeamId: readActiveTeamId(),
         });
       } catch (err) {
-        console.error('[backend store] fetchTeams failed:', err);
+        console.error('[backend store] refreshTeams failed:', err);
         set({ teamsLoading: false });
-        tea.notify.error('加载团队列表失败');
+        tea.notify.error(i18n.t('backend.loadTeamsFailed'));
       } finally {
         set({ inflightTeams: null });
       }
@@ -158,7 +168,7 @@ export const useBackendStore = create<BackendState>((set, get) => ({
             Object.entries(s.inflightAgents).filter(([k]) => k !== teamId)
           ),
         }));
-        tea.notify.error('加载 Agent 列表失败');
+        tea.notify.error(i18n.t('backend.loadAgentsFailed'));
         return [];
       }
     })();
@@ -167,49 +177,49 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     return promise;
   },
 
-  fetchTasks: async (teamId: string) => {
+  fetchTasks: async (teamId: string, params?: { limit?: number; offset?: number; force?: boolean }) => {
     const state = get();
-    if (state.tasksLoadedTeamIds.has(teamId)) {
-      return state.tasksByTeam[teamId] ?? [];
+    const limit = params?.limit ?? 20;
+    const offset = params?.offset ?? 0;
+    // 缓存 key：按 (offset, limit) 粒度（teamId 已在 tasksPagesByTeam[teamId] 这层隔离）
+    const cacheKey = `${offset}:${limit}`;
+    // 已缓存且非强制刷新 → 直接返回
+    if (!params?.force && state.tasksPagesByTeam[teamId]?.[cacheKey]) {
+      return state.tasksPagesByTeam[teamId][cacheKey];
     }
-    if (state.inflightTasks[teamId] != null) {
-      return state.inflightTasks[teamId];
-    }
+    // in-flight 去重
+    if (state.inflightTasks[cacheKey]) { await state.inflightTasks[cacheKey]; return get().tasksPagesByTeam[teamId]?.[cacheKey] ?? []; }
 
     const promise = (async () => {
       try {
-        const backendTasks = await tasksApi.list(teamId);
-        // task/list 不带 linked_agents，逐条拉 task/get 补齐
-        const linkedResults = await Promise.all(
-          backendTasks.map((bt) =>
-            tasksApi
-              .get(bt.task_id)
-              .then((full) => full.agents.filter((a) => a.status === 'active').map((a) => a.agent_id))
-              .catch(() => [] as string[])
-          )
+        const { items: tasksWithAgents, total } = await tasksApi.listWithAgents(teamId, { limit, offset });
+        const adapted = tasksWithAgents.map((t) =>
+          adaptTask(t, t.agents.filter((a) => a.status === 'active').map((a) => a.agent_id))
         );
-        const adapted = backendTasks.map((bt, i) => adaptTask(bt, linkedResults[i]));
-        set((s) => ({
-          tasksByTeam: { ...s.tasksByTeam, [teamId]: adapted },
-          tasksLoadedTeamIds: new Set(s.tasksLoadedTeamIds).add(teamId),
-          inflightTasks: Object.fromEntries(
-            Object.entries(s.inflightTasks).filter(([k]) => k !== teamId)
-          ),
-        }));
+        set((s) => {
+          const teamPages = s.tasksPagesByTeam[teamId] ?? {};
+          return {
+            tasksPagesByTeam: { ...s.tasksPagesByTeam, [teamId]: { ...teamPages, [cacheKey]: adapted } },
+            tasksTotalByTeam: { ...s.tasksTotalByTeam, [teamId]: total },
+            inflightTasks: Object.fromEntries(
+              Object.entries(s.inflightTasks).filter(([k]) => k !== cacheKey)
+            ),
+          };
+        });
         return adapted;
       } catch (err) {
         console.error('[backend store] fetchTasks failed:', err);
         set((s) => ({
           inflightTasks: Object.fromEntries(
-            Object.entries(s.inflightTasks).filter(([k]) => k !== teamId)
+            Object.entries(s.inflightTasks).filter(([k]) => k !== cacheKey)
           ),
         }));
-        tea.notify.error('加载任务列表失败');
+        tea.notify.error(i18n.t('backend.loadTasksFailed'));
         return [];
       }
     })();
 
-    set((s) => ({ inflightTasks: { ...s.inflightTasks, [teamId]: promise } }));
+    set((s) => ({ inflightTasks: { ...s.inflightTasks, [cacheKey]: promise } }));
     return promise;
   },
 
@@ -225,9 +235,9 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       teamsLoaded: false,
       teamsLoading: false,
       agentsByTeam: {},
-      tasksByTeam: {},
+      tasksTotalByTeam: {},
+      tasksPagesByTeam: {},
       agentsLoadedTeamIds: new Set(),
-      tasksLoadedTeamIds: new Set(),
       inflightTeams: null,
       inflightAgents: {},
       inflightTasks: {},
@@ -240,13 +250,13 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     set((s) => {
       const agentsLoadedTeamIds = new Set(s.agentsLoadedTeamIds);
       agentsLoadedTeamIds.delete(teamId);
-      const tasksLoadedTeamIds = new Set(s.tasksLoadedTeamIds);
-      tasksLoadedTeamIds.delete(teamId);
       const agentsByTeam = { ...s.agentsByTeam };
       delete agentsByTeam[teamId];
-      const tasksByTeam = { ...s.tasksByTeam };
-      delete tasksByTeam[teamId];
-      return { agentsLoadedTeamIds, tasksLoadedTeamIds, agentsByTeam, tasksByTeam };
+      const tasksPagesByTeam = { ...s.tasksPagesByTeam };
+      delete tasksPagesByTeam[teamId];
+      const tasksTotalByTeam = { ...s.tasksTotalByTeam };
+      delete tasksTotalByTeam[teamId];
+      return { agentsLoadedTeamIds, agentsByTeam, tasksPagesByTeam, tasksTotalByTeam };
     });
     emitBackendRefresh();
   },
@@ -258,9 +268,9 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       teamsLoaded: false,
       teamsLoading: false,
       agentsByTeam: {},
-      tasksByTeam: {},
+      tasksTotalByTeam: {},
+      tasksPagesByTeam: {},
       agentsLoadedTeamIds: new Set(),
-      tasksLoadedTeamIds: new Set(),
       inflightTeams: null,
       inflightAgents: {},
       inflightTasks: {},
@@ -343,21 +353,30 @@ export function useAgents(teamId: string | null | undefined): {
 /**
  * useTasks — 从 store 读指定 team 的 task 列表。
  */
-export function useTasks(teamId: string | null | undefined): Task[] {
+export function useTasks(teamId: string | null | undefined, page: number = 1, pageSize: number = 12): {
+  tasks: Task[];
+  total: number;
+  loading: boolean;
+} {
+  const offset = (page - 1) * pageSize;
+  const cacheKey = `${offset}:${pageSize}`;
   const tasks = useBackendStore((s) =>
-    teamId ? (s.tasksByTeam[teamId] ?? EMPTY_TASKS) : EMPTY_TASKS
+    teamId ? (s.tasksPagesByTeam[teamId]?.[cacheKey] ?? EMPTY_TASKS) : EMPTY_TASKS
   );
-  const loaded = useBackendStore((s) => (teamId ? s.tasksLoadedTeamIds.has(teamId) : true));
+  const total = useBackendStore((s) =>
+    teamId ? (s.tasksTotalByTeam[teamId] ?? 0) : 0
+  );
+  const loaded = useBackendStore((s) =>
+    teamId ? !!s.tasksPagesByTeam[teamId]?.[cacheKey] : true
+  );
   const fetchTasks = useBackendStore((s) => s.fetchTasks);
 
   useEffect(() => {
-    if (!teamId) return;
-    if (!loaded) {
-      void fetchTasks(teamId);
-    }
-  }, [teamId, loaded, fetchTasks]);
+    if (!teamId || loaded) return;
+    void fetchTasks(teamId, { limit: pageSize, offset });
+  }, [teamId, offset, pageSize, loaded, fetchTasks]);
 
-  return tasks;
+  return { tasks, total, loading: !!teamId && !loaded };
 }
 
 /**

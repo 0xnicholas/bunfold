@@ -691,7 +691,7 @@ export class PipelineWorker {
     // CR-1 fix: ACK the original message to prevent stale recovery from picking it up
     // again. Without this, a dead-lettered task remains in XPENDING and gets re-claimed
     // every pendingRecoveryIntervalMs, causing infinite retry loops that block the
-    // worker pool (see mem-nqm17qg7 incident).
+    // worker pool (root-caused from a production incident).
     const msgId = (task as any)._msgId;
     if (msgId) {
       try { await this.backend.ackTask(msgId); } catch { /* best effort */ }

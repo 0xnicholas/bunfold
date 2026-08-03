@@ -172,8 +172,11 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
     const taskSlice = team.tasks.slice(page.start, page.end);
 
     // description 留空 —— label 已含 task 名 + id 后缀，"Task: name" 只是噪音。
+    // 虚拟兜底条目（isDefault）不拼 id 后缀，反正只有一个不会重名歧义。
     const taskOpts: Array<{ label: string; description: string }> = taskSlice.map((t) => ({
-      label: `${t.task_name} (${t.task_id.slice(-8)})`,
+      label: t.isDefault
+        ? t.task_name
+        : `${t.task_name} (${t.task_id.slice(-8)})`,
       description: "",
     }));
 
@@ -184,6 +187,7 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
         description: `查看下一批（还剩 ${remaining} 个任务）`,
       });
     }
+
     // 同 agent 阶段：pagination.ts 保证 count ≥ 2，此处 <2 说明分页器有 bug。
     if (taskOpts.length < 2) {
       throw new Error(

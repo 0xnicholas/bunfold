@@ -27,6 +27,7 @@ import { parseSkillFile, validateSkillFile } from "./skill-format.js";
 import { SkillResourceStore, type SkillResourcePayload } from "./skill-resource-store.js";
 import type { ISkillStore, SkillSearchResult } from "./skill-store.interface.js";
 import { SkillVersioning } from "./skill-versioning.js";
+import { randomBase62 } from "../../utils/short-id.js";
 import {
   SkillPermissionError,
   assertOwner,
@@ -61,6 +62,7 @@ export type SkillCoreErrorCode =
   | "SKILL_NOT_FOUND"
   | "SKILL_VERSION_STALE"
   | "SKILL_VERSION_EXPIRED"
+  | "SKILL_ID_COLLISION"
   | "INVALID_PATH"
   | "RESOURCE_TOO_LARGE"
   | "STORAGE_NOT_FOUND"
@@ -93,7 +95,11 @@ export interface SkillCoreOptions {
   store: ISkillStore;
   resources: SkillResourceStore;
   versioning: SkillVersioning;
-  /** 用于 skill_id 生成。默认 'skl-' + ulid。 */
+  /**
+   * 用于 skill_id 生成。默认 `skl-` + 12 字符 base62（CSPRNG，71 bit 真熵）。
+   * 保持与老 sid 相同长度 (16 字符)，仅字符集从 base36 扩到 base62 且用真随机源。
+   * 测试可注入固定值。
+   */
   ulid?: () => string;
   /** Date.now 的注入。默认 Date.now。 */
   now?: () => number;
@@ -215,7 +221,10 @@ export class SkillCore {
     this.store = opts.store;
     this.resources = opts.resources;
     this.versioning = opts.versioning;
-    this.ulid = opts.ulid ?? (() => `skl-${Math.random().toString(36).slice(2, 14)}`);
+    // 默认 sid = `skl-` + 12 字符 base62（CSPRNG，~71 bit 真熵）；总长 16。
+    // 与旧 `skl-${Math.random().toString(36).slice(2,14)}` 相同长度，
+    // 碰撞概率从单实例 100 万条时的 ~1.1e-4 降至 ~1.5e-10（详见 utils/short-id.ts）。
+    this.ulid = opts.ulid ?? (() => `skl-${randomBase62(12)}`);
     this.now = opts.now ?? (() => Date.now());
     this.versionTtlSeconds = opts.versionTtlSeconds ?? 0;
     this.onSkillArchived = opts.onSkillArchived;
@@ -239,9 +248,38 @@ export class SkillCore {
       throw new SkillCoreError("INVALID_FRONTMATTER", `frontmatter.name '${file.frontmatter.name}' != body.name '${input.name}'`);
     }
 
+    // 2) 生成 sid 并做碰撞检测
+    //
+    // 背景：默认 ulid 走 CSPRNG base62 12 字符（~71 bit 真熵，单实例 100 万
+    // skill 时碰撞概率 ~1.5e-10），工程上"永远不会撞"；但仍加一层 preflight
+    // 防御，把"撞了静默覆盖"变成"撞了 retry"。为什么不上 DB UNIQUE 约束：
+    //   - SQLite skills 表 UNIQUE(skill_id, version) 已存在，v1 碰撞会被物理挡住
+    //   - TCVDB 主键是 row_id（每行唯一），无法给 skill_id 加"仅 v1 唯一"约束
+    //     （skill 天生多版本，version 2/3 就是同 skill_id 共存）
+    // → 应用层 preflight 是唯一可移植到两种 store 的方案。
+    //
     // 注：注入的 ulid 工厂可能不带 'skl-' 前缀，这里兜底拼上。
-    const u = this.ulid();
-    const sid = u.startsWith("skl-") ? u : `skl-${u}`;
+    const MAX_ID_ATTEMPTS = 3;
+    let sid = "";
+    for (let attempt = 1; attempt <= MAX_ID_ATTEMPTS; attempt++) {
+      const u = this.ulid();
+      sid = u.startsWith("skl-") ? u : `skl-${u}`;
+
+      // 全 team 范围查（不带 team_id）：只要 skill_id 全局撞了就重试。
+      // 用 getHeadIncludingArchived 覆盖 archived 行——归档不代表 sid 空闲，
+      // 版本表 UNIQUE(skill_id, version) 仍会挡住写入。
+      const existing = await this.store.getHeadIncludingArchived(sid);
+      if (!existing) break;
+
+      if (attempt >= MAX_ID_ATTEMPTS) {
+        // 连续 3 次撞 —— 只可能是 ulid 注入器坏了（比如测试里固定返回同一值）
+        // 或熵源崩了，不是概率事件，直接抛。
+        throw new SkillCoreError(
+          "SKILL_ID_COLLISION",
+          `failed to generate a unique skill_id after ${MAX_ID_ATTEMPTS} attempts`,
+        );
+      }
+    }
 
     try {
       return await this.versioning.createNewSkill(

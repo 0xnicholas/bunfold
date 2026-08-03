@@ -34,7 +34,7 @@ import type {
   SkillBufferStorage,
   SkillTaskEntry,
 } from "./buffer-storage.js";
-import type { ExtractorLogger } from "../queue/types.js";
+import { obsLogger } from "../../report/obs-logger.js";
 
 export interface TriggerArchiveInput {
   session: SessionKey;
@@ -53,8 +53,8 @@ export interface TriggerArchiveInput {
    */
   maxIterations?: number;
   /**
-   * [skill-perf 2026-07-21] 上游 handler 生成的 request_id。传入后 trigger 段
-   * log 会带上，方便 grep 单次请求全链路耗时。缺省 "-" 不影响功能。
+   * 上游 handler 生成的 request_id。传入后 trigger 内部分段 obsLogger 事件
+   * 会带上，方便按 req_id 过滤 handler + trigger + worker 全链路。缺省不影响功能。
    */
   perfRequestId?: string;
 }
@@ -81,11 +81,6 @@ export interface SkillTriggerServiceOptions {
   tasksMutexWaitDeadlineMs?: number;
   /** 时间源，用于测试注入。 */
   now?: () => number;
-  /**
-   * [skill-perf 2026-07-21] 可观测性 logger。缺省则 skill-perf 段 log 不输出，
-   * 不影响业务逻辑，只是没有耗时分段。
-   */
-  logger?: ExtractorLogger;
 }
 
 export class SkillTriggerService {
@@ -94,7 +89,6 @@ export class SkillTriggerService {
   private readonly tasksMutexLockTtlMs: number;
   private readonly tasksMutexWaitDeadlineMs: number;
   private readonly now: () => number;
-  private readonly logger?: ExtractorLogger;
 
   constructor(opts: SkillTriggerServiceOptions) {
     this.buffer = opts.buffer;
@@ -102,7 +96,6 @@ export class SkillTriggerService {
     this.tasksMutexLockTtlMs = opts.tasksMutexLockTtlMs ?? 10_000;
     this.tasksMutexWaitDeadlineMs = opts.tasksMutexWaitDeadlineMs ?? 30_000;
     this.now = opts.now ?? (() => Date.now());
-    this.logger = opts.logger;
   }
 
   /**
@@ -115,7 +108,12 @@ export class SkillTriggerService {
     // ① 生成标识
     const archivedAtMs = this.now();
     const archiveKey = this.buffer.archiveKey(session, archivedAtMs);
-    const taskId = `task-${randomUUID().slice(0, 8)}`;
+    // 前缀 `skill-extract-task-` 是内部 anchor（跟业务侧 task_id 明确区分）。
+    // 一次归档 = 一个 SkillTaskEntry.task_id；handler 侧 `[skill-perf] phase=trigger.enqueueAgent
+    // task_id=…` 与 worker 侧 `[skill-perf] kind=worker phase=consume.*` 共用同一
+    // 值，grep 一次拉全 handler + worker 双段耗时。老数据前缀 `task-` 会被
+    // worker 自然消费掉，无迁移风险（filter 按 task_id 值等价比较，不解析前缀）。
+    const taskId = `skill-extract-task-${randomUUID().slice(0, 8)}`;
     const agent: AgentTuple = {
       space_id: session.space_id,
       user_id: session.user_id,
@@ -138,15 +136,11 @@ export class SkillTriggerService {
       max_iterations: input.maxIterations,
     };
 
-    // [skill-perf 2026-07-21] 归档段的三个关键 IO：writeArchive / mutex acquire /
-    // readTasks / writeTasks / enqueueAgent。历史事故里就是 writeArchive 慢 10s
-    // 拖崩了 worker 侧的判空逻辑；这里逐段打耗时，方便直接看是哪一段慢。
-    const rid = input.perfRequestId ?? "-";
-    const perfLog = (phase: string, dur: number, extra?: string) => {
-      this.logger?.info?.(
-        `[skill-perf] phase=trigger.${phase} req_id=${rid} dur=${dur}ms${extra ? " " + extra : ""}`,
-      );
-    };
+    // [obs] 归档段五个关键 IO：writeArchive / mutex acquire / readTasks /
+    // writeTasks / enqueueAgent。历史事故里就是 writeArchive 慢 10s 拖崩了
+    // worker 侧的判空逻辑；这里逐段结构化事件，字段按 req_id / task_id 关联。
+    // obsLogger 内部 try/catch + 后端降级，不需要额外防御。
+    const rid = input.perfRequestId;
 
     // ② 先写 archive（已存在视为成功）
     //
@@ -161,7 +155,11 @@ export class SkillTriggerService {
     // 失败态：writeArchive 抛错 → 直接向 handler 抛异常，无残留。
     const t0Arch = Date.now();
     await this.buffer.writeArchive(session, archivedAtMs, bufferAtTrigger);
-    perfLog("writeArchive", Date.now() - t0Arch, `archive_key=${archiveKey}`);
+    obsLogger.info("skill.trigger.write_archive", {
+      req_id: rid, task_id: taskId,
+      dur_ms: Date.now() - t0Arch,
+      archive_key: archiveKey,
+    });
 
     // ③ 抢 mutex → CAS 追加 task 到队尾 → 在同一把锁内入队
     //
@@ -179,25 +177,43 @@ export class SkillTriggerService {
       { lockTtlMs: this.tasksMutexLockTtlMs, waitDeadlineMs: this.tasksMutexWaitDeadlineMs },
       async () => {
         const mutexAcquiredAt = Date.now();
-        perfLog("mutexAcquire", mutexAcquiredAt - t0MutexEntry);
+        obsLogger.info("skill.trigger.mutex_acquire", {
+          req_id: rid, task_id: taskId,
+          dur_ms: mutexAcquiredAt - t0MutexEntry,
+        });
 
         const t0Read = Date.now();
         const doc = await this.buffer.readTasks(agent);
-        perfLog("readTasks", Date.now() - t0Read, `existing_tasks=${doc.tasks.length}`);
+        obsLogger.info("skill.trigger.read_tasks", {
+          req_id: rid, task_id: taskId,
+          dur_ms: Date.now() - t0Read,
+          existing_tasks: doc.tasks.length,
+        });
 
         doc.tasks.push(entry);
         doc.updated_at_ms = archivedAtMs;
 
         const t0Write = Date.now();
         await this.buffer.writeTasks(agent, doc);
-        perfLog("writeTasks", Date.now() - t0Write, `total_tasks=${doc.tasks.length}`);
+        obsLogger.info("skill.trigger.write_tasks", {
+          req_id: rid, task_id: taskId,
+          dur_ms: Date.now() - t0Write,
+          total_tasks: doc.tasks.length,
+        });
 
         const t0Enq = Date.now();
         const enqueued = await this.queue.enqueueAgent(agent);
-        perfLog("enqueueAgent", Date.now() - t0Enq, `added=${enqueued}`);
+        obsLogger.info("skill.trigger.enqueue_agent", {
+          req_id: rid, task_id: taskId,
+          dur_ms: Date.now() - t0Enq,
+          added: enqueued,
+        });
       },
     );
-    perfLog("mutexTotal", Date.now() - t0MutexEntry);
+    obsLogger.info("skill.trigger.mutex_total", {
+      req_id: rid, task_id: taskId,
+      dur_ms: Date.now() - t0MutexEntry,
+    });
 
     return { taskId, archivedAtMs, archiveKey };
   }

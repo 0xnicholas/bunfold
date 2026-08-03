@@ -67,19 +67,17 @@ $EDITOR .env
 
 - 第一次访问会看到登录页，用 `start-all.sh` 结尾打印的 admin `user_key`
   （即 `deploy/global-images/.admin-key` 文件里那串 `sk-mem-...`）登录
-- admin 登录后能**创建 Team 和子用户**，但目前**不能直接创建 Agent / Wiki
-  / Skill 等业务资产**（业务侧 API 会做 `owner_user_id === caller` 校验，
-  system_admin 目前不在允许列表里；这层增强会在后续版本放开）
-- **正确姿势**：admin 建一把 `normal` 用户 → 复制新用户的 `user_key` →
-  退出 admin 换新用户登录 → 后续所有 Team/Agent/Task 都由这个用户 own
+- admin 登录后可以直接使用 Wiki、CodeGraph、Skill 等资产管理功能，创建 Team / Agent / Task 等业务资产
+- 如果希望隔离运维与业务（推荐），可创建 `normal` 业务用户 → 复制新用户的 `user_key` → 退出 admin 换新用户登录
 
 > 换句话说：admin 是"运维口"用来管人，业务用户是"应用口"用来管资产。
-> 单机本地体验也应遵循这个分层，不要用 admin key 直接跑 CC。
+> 单机本地体验也推荐遵循这个分层，不要用 admin key 直接跑 CC。
+> 注：2.0.0-beta.1 中 admin 不能拥有业务资产；2.0.0 正式版起 admin 也可以直接操作资产。
 
 Knowledge Service Swagger（可选，看接口调试用）：
 <http://localhost:8424/docs>
 
-### 第 1.5 步：admin 建业务用户（首次必做）
+### 第 1.5 步：admin 建业务用户（可选，推荐隔离运维与业务）
 
 面板左上角「用户管理」（或用 admin 直接调 API）新建一个用户：
 
@@ -97,7 +95,7 @@ curl -sS -X POST http://localhost:8420/v3/meta/user/create \
 **保存好**（面板无处再看到全值，只有创建时返回一次）。
 
 之后**面板退出登录**，用这把新 key 重新登录 —— 你现在是 `normal` 用户，
-可以在自己名下建 Team / Agent / Task 了。
+可以在自己名下建 Team / Agent / Task 了。当然，admin 也可以直接操作，这里只是推荐隔离。
 
 ### 第 2 步：在面板里建 Team / Agent / Task
 
@@ -116,8 +114,7 @@ Coding agent 用记忆必须落到具体 `team / agent / task` 三元组上：
 
 ### 第 3 步：用 Claude Code 走 Proxy
 
-跑 CC 时用**业务用户**的 `user_key`（不是 admin key —— admin 目前无法拥有资产，
-proxy 侧 sessionInit 也会因为拉不到 team 列表而选不出东西）：
+跑 CC 时用 admin 或业务用户的 `user_key`（2.0.0 正式版起 admin 也可拥有资产）：
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8096/claude-code/default
@@ -133,6 +130,9 @@ claude --model <PROXY_UPSTREAM_MODEL 里配的上游模型>
   只有这个 user own 的 team/agent/task 才会出现在下一步表单里
 - `--model` 用你在 `.env` 里 `PROXY_UPSTREAM_MODEL` 配的那个上游模型名
   （proxy 会把请求转发到 `PROXY_UPSTREAM_URL`）
+
+> 💡 **也可以用 CodeBuddy 走 Proxy**——配置方式见下方
+> [通过 Proxy 使用 CodeBuddy](#通过-proxy-使用-codebuddy) 章节。
 
 ### 第 4 步：CC 首次会话，选 Team → Agent → Task
 
@@ -190,9 +190,7 @@ curl -s http://localhost:8420/health | jq .services.pipelineWorker
 起的，重启 proxy：`PROXY_FULL_STACK=1 ./start-proxy.sh`。
 
 **Q: 表单选择项里空空的，或者只有别人的 team？**
-你可能用 admin key 直接跑 CC 了 —— admin **不能拥有业务资产**（当前限制），
-所以列表为空。正确做法：先按第 1.5 步建一个业务用户，用它的 `default_user_key`
-作为 `ANTHROPIC_AUTH_TOKEN`。同时那个用户名下必须先在面板里建过 Team/Agent。
+请确认当前使用的账号已在面板中创建过 Team 和 Agent。如果用的是 admin 账号，确保已创建了相关资产；如果用的是业务用户账号，检查是否已在对应 team 下建过 Agent。
 
 
 **Q: 面板显示"Panel API 8125 未启动"？**
@@ -254,6 +252,180 @@ Proxy 会依次做：`auth`（校验 user_key）→ `sessionInit`（选 team/age
 
 关掉完整流水线（只做透传）：`PROXY_FULL_STACK=0 ./start-proxy.sh`。
 
+## 通过 Proxy 使用 CodeBuddy
+
+[CodeBuddy](https://www.codebuddy.ai/) 是腾讯推出的 AI 编程助手 IDE 插件。通过自定义模型配置，你可以把 CodeBuddy 的对话请求路由到 Proxy，在 IDE 内获得与 Claude Code 相同的记忆能力。
+
+### ⚠️ 版本限制
+
+> CodeBuddy **4.10.2、4.10.3、4.10.4** 存在已知 Bug：这些版本不会在请求中
+> 携带 `sessionId`，导致 Proxy 无法完成 Session 初始化。
+>
+> **请使用 CodeBuddy ≥ 4.10.5 或 ≤ 4.10.1。**
+
+### 配置
+
+在开发机的 `~/.codebuddy/models.json` 文件中写入以下内容（注意替换 API Key）：
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-20250514",
+      "name": "proxy-memory-agent",
+      "vendor": "claude",
+      "apiKey": "<业务用户的 sk-mem-... user_key>",
+      "maxInputTokens": 200000,
+      "url": "http://127.0.0.1:8096/codebuddy/default",
+      "supportsToolCall": true,
+      "supportsImages": true
+    }
+  ]
+}
+```
+
+- `id`：Proxy 上游 LLM 支持的模型 ID（必须与 Proxy 配置的 `PROXY_UPSTREAM_MODEL`
+  或 upstream 模型列表中的某个模型匹配，如 `claude-sonnet-4-20250514`）
+- `name`：在 CodeBuddy 对话框中显示的名称，可自定义（如 `proxy-memory-agent`）
+- `vendor`：模型供应商标识，仅用于 UI 展示（如 `claude`、`openai`），不影响实际请求
+- `apiKey`：使用**业务用户**的 `user_key`（与 Claude Code 的
+  `ANTHROPIC_AUTH_TOKEN` 相同；不建议直接使用 admin key）
+- `url`：Proxy 地址 + `/codebuddy/default` 路径（端口与 Claude Code 一致，
+  默认 `8096`）；`default` 是 memory 实例 ID
+
+配置完成后，在 CodeBuddy 对话框中选择刚才配置的模型名称即可开始对话。
+Session init 流程与 Claude Code 一致（选 Team → Agent → Task）。
+
+## 通过 Proxy 使用 Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com/docs/) 是一个开源的 AI Agent 框架。通过配置 extra headers，可以让 Hermes 的对话请求经过 Proxy，获得团队记忆能力。
+
+### 配置
+
+编辑 `~/.hermes/config.yaml`：
+
+```yaml
+model:
+  default: gpt-5.5
+  provider: custom
+  base_url: http://<proxy-host>:<port>/hermes/<spaceId>
+  api_key: <从面板获取的 API Key>
+  extra_headers:
+    x-team-id: <从面板获取的 team_id>
+    x-agent-id: <从面板获取的 agent_id>
+    x-task-id: <从面板获取的 task_id>
+    x-conversation-id: <自定义的会话标识>
+```
+
+- `base_url`：Proxy 地址 + `/hermes/<spaceId>` 路径。`<spaceId>` 是 memory 实例 ID（从面板获取，通常为 `default`）
+- `api_key`：业务用户的 `user_key`（从管理面板"API Key"页获取）
+- `x-team-id` / `x-agent-id`：从管理面板对应页面获取，与 CodeBuddy / Claude Code 的获取方式相同
+- `x-task-id`：从管理面板"任务管理"页获取。**当前版本必填**——缺少此字段会导致 session 注册失败，记忆功能不生效（见下方[已知限制](#关于-x-task-id-的已知限制)）
+- `x-conversation-id`：用户自定义的会话标识（见下方[已知限制](#关于-x-conversation-id-的已知限制)）
+
+## 通过 Proxy 使用 OpenClaw
+
+[OpenClaw](https://github.com/openclaw/openclaw) 是一个开源的 AI 编码 Agent。通过自定义 provider 配置，可以让 OpenClaw 的请求经过 Proxy。
+
+### 配置
+
+编辑 `~/.openclaw/openclaw.json`，在 `models.providers` 中添加：
+
+```jsonc
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "memory-proxy": {
+        "baseUrl": "http://<proxy-host>:<port>/openclaw/<spaceId>",
+        "apiKey": "<从面板获取的 API Key>",
+        "api": "openai-completions",
+        "headers": {
+          "x-team-id": "<从面板获取的 team_id>",
+          "x-agent-id": "<从面板获取的 agent_id>",
+          "x-task-id": "<从面板获取的 task_id>",
+          "x-conversation-id": "<自定义的会话标识>"
+        },
+        "request": {
+          "allowPrivateNetwork": true
+        },
+        "models": [
+          {
+            "id": "gpt-5.5",
+            "name": "GPT-5.5",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 32000,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `baseUrl`：Proxy 地址 + `/openclaw/<spaceId>` 路径
+- `apiKey`：业务用户的 `user_key`
+- `headers`：必须包含 `x-team-id`、`x-agent-id`、`x-task-id`、`x-conversation-id`。其中 `x-task-id` 当前版本为必填（见下方[已知限制](#关于-x-task-id-的已知限制)）
+- `models[].id`：必须与 Proxy 上游配置的模型 ID 匹配
+
+## 其他平台接入（通用）
+
+除 ClaudeCode / CodeBuddy / Hermes / OpenClaw 外，任何兼容 OpenAI API 的平台或自行开发的 Agent 均可接入 Proxy，获得团队记忆能力。
+
+### 接入方式
+
+将平台的 API base URL 指向 Proxy：
+
+```text
+http://<proxy-host>:<port>/<agent-source>/<spaceId>
+```
+
+- `<agent-source>`：平台标识，必须从 Proxy 支持的以下值中选用：`claude-code`、`codebuddy`、`hermes`、`openclaw`。如果使用的是其他平台，可伪装成其中某一个接入（如使用 `codebuddy` 作为标识）
+- `<spaceId>`：memory 实例 ID（本地部署固定为 `default`）
+
+请求 Path 自动拼接 `/v1/chat/completions`（OpenAI 协议）或 `/v1/messages`（Anthropic 协议）。
+
+### 必须携带的 Header
+
+| Header | 说明 |
+|--------|------|
+| `Authorization: Bearer <user_key>` | 业务用户的 API Key（从面板"API Key"页获取） |
+| `x-team-id` | 团队 ID |
+| `x-agent-id` | Agent ID |
+| `x-task-id` | 任务 ID（当前版本必填，见下方[已知限制](#关于-x-task-id-的已知限制)） |
+| `x-conversation-id` | 会话标识，由客户端自行生成和管理 |
+
+以上 header 缺一不可——Proxy 会通过 header 直接完成 session 注册，跳过交互式表单。无法提供 headers 的平台将触发 session bypass，记忆注入和对话回流均不生效。
+
+## 关于 `x-task-id` 的已知限制
+
+> ⚠️ **当前版本限制**：`x-task-id` 在 Hermes / OpenClaw 场景下为**必填项**。
+>
+> Proxy 的 header 预选机制要求 `x-team-id` + `x-agent-id` + `x-task-id` 三者齐全才能完成 session 直接注册。缺少 `x-task-id` 时，Proxy 会尝试弹出交互式表单让用户选择 task，但 Hermes / OpenClaw 无法响应交互式表单，最终导致 session bypass（记忆注入和对话回流均不生效）。
+>
+> 这带来的不便：
+>
+> 1. 用户需要预先在面板上创建 Task 并获取 `task_id`，增加了接入门槛。
+> 2. 切换不同任务时需要手动修改配置文件中的 `x-task-id`。
+>
+> 我们将在下一个版本中支持 `x-task-id` 可选：当 header 中未指定 task 时，Proxy 自动选择该 agent 下的默认 task 或跳过 task 绑定，直接完成 session 注册。
+
+## 关于 `x-conversation-id` 的已知限制
+
+> ⚠️ **当前版本限制**：Hermes 和 OpenClaw 需要在配置文件中静态指定 `x-conversation-id`。
+> 这与 Claude Code / CodeBuddy 不同（它们由 SDK 自动管理 session ID）。
+>
+> 当前限制：
+>
+> 1. **同一个 conversation ID 的所有请求共享同一个 session** —— 记忆注入、对话回流都绑定到这个 ID。
+> 2. **每次开启新对话时需要手动更换 conversation ID**，否则会继续沿用上次的 session 状态。
+> 3. **部分客户端的 tool call 后续请求可能不携带 extra headers**，导致那些轮次跳过记忆注入和对话回流。
+>
+> 我们将在下一个版本中优化 conversation ID 的使用体验。
+
 ## 停止 / 清理
 
 ```bash
@@ -263,6 +435,6 @@ Proxy 会依次做：`auth`（校验 user_key）→ `sessionInit`（选 team/age
 
 ## 更多
 
-其它安装形态（OpenClaw、Hermes、SDK、源码启动、K8s、平台说明），参见
+其它安装形态（OpenClaw、Hermes、CodeBuddy、SDK、源码启动、K8s、平台说明），参见
 [`deploy/global-images/README.md`](./deploy/global-images/README.md) 与
 [`MemoryCore/README_CN.md`](./MemoryCore/README_CN.md)。

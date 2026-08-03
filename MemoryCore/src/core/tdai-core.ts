@@ -947,6 +947,7 @@ export class TdaiCore {
             maxIterations: resolved.extraction.maxIterations,
             headChars: resolved.extraction.headChars,
             tailChars: resolved.extraction.tailChars,
+            maxTokens: resolved.extraction.maxTokens,
             logger: this.logger,
           });
         } else {

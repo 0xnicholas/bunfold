@@ -16,6 +16,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 
+import { randomBase62 } from "../../utils/short-id.js";
 import { SKILLS_DDL, SKILL_FTS_DDL, SKILL_VEC_DDL_TEMPLATE, FTS_CONTENT_MAX } from "./skill-store-ddl.js";
 import { buildFtsQuery, tokenizeForFts } from "../store/sqlite.js";
 import type { ISkillStore, ExpiredVersionMeta, SkillStoreCapabilities, SkillSearchResult } from "./skill-store.interface.js";
@@ -84,11 +85,13 @@ export interface SqliteSkillStoreOptions {
 //  内部辅助
 // ═══════════════════════════════════════════════════════════════════════
 
-/** 极简 ULID 生成器（生产可换为更强实现；这里只要求字典序单调 + 唯一）。 */
+/**
+ * row_id 生成器 —— 每行的物理主键（TEXT PRIMARY KEY）。
+ * 与 skill_id 分离：skill_id 在版本间共享，row_id 每一行唯一。
+ * base62 12 字符（~71 bit CSPRNG 真熵）；无 base36 的伪随机隐患。
+ */
 function defaultUlid(): string {
-  const ts = Date.now().toString(36);
-  const rnd = Math.random().toString(36).slice(2, 12);
-  return `${ts}-${rnd}`;
+  return randomBase62(12);
 }
 
 interface SkillRowRaw {

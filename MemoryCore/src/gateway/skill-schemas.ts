@@ -248,3 +248,18 @@ export type FilesReadRequest = z.infer<typeof filesReadRequestSchema>;
 export type ListingRequest = z.infer<typeof listingRequestSchema>;
 export type ExtractRequest = z.infer<typeof extractRequestSchema>;
 export type ConversationAddRequest = z.infer<typeof conversationAddRequestSchema>;
+
+// ═════════════════════════════════════════════════════════════════════
+//  force-archive (手动强制归档，跳过阈值)
+// ═════════════════════════════════════════════════════════════════════
+
+export const forceArchiveRequestSchema = z.object({
+  space_id: z.string().min(1),
+  user_id: z.string().min(1),
+  team_id: z.string().min(1),
+  agent_id: z.string().min(1),
+  session_id: z.string().min(1),
+  reason: z.string().max(2000).optional(),
+  task_id: z.string().optional(),
+});
+export type ForceArchiveRequest = z.infer<typeof forceArchiveRequestSchema>;

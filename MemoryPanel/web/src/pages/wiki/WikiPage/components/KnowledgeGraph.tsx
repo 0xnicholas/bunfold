@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import Graph from "graphology";
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core";
 import "@react-sigma/core/lib/style.css";
@@ -191,6 +192,7 @@ interface Props {
 }
 
 export default function KnowledgeGraph({ data, loading, onNodeClick, highlightNode, className }: Props) {
+  const { t } = useTranslation();
   const [colorMode, setColorMode] = useState<ColorMode>("type");
   const [hideStructural, setHideStructural] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -213,8 +215,8 @@ export default function KnowledgeGraph({ data, loading, onNodeClick, highlightNo
     setSearchResults(filteredData.nodes.filter((n) => n.label.toLowerCase().includes(lower) || n.id.toLowerCase().includes(lower)).slice(0, 8));
   }, [filteredData]);
 
-  if (loading) return <div className={`flex items-center justify-center ${className}`} style={{ background: palette.bg }}><span className="text-xs text-muted-foreground">加载图谱...</span></div>;
-  if (!filteredData || filteredData.nodes.length === 0) return <div className={`flex items-center justify-center ${className}`} style={{ background: palette.bg }}><span className="text-[12px] text-muted-foreground/70">暂无图谱数据</span></div>;
+  if (loading) return <div className={`flex items-center justify-center ${className}`} style={{ background: palette.bg }}><span className="text-xs text-muted-foreground">{t('graph.loading')}</span></div>;
+  if (!filteredData || filteredData.nodes.length === 0) return <div className={`flex items-center justify-center ${className}`} style={{ background: palette.bg }}><span className="text-[12px] text-muted-foreground/70">{t('graph.empty')}</span></div>;
 
   const typeSet = new Set(filteredData.nodes.map((n) => n.type));
   const types = [...typeSet].sort();
@@ -235,7 +237,7 @@ export default function KnowledgeGraph({ data, loading, onNodeClick, highlightNo
           <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 text-xs inline-flex items-center"><SearchIcon size={12} /></span>
           <input
             className="h-7 w-full pl-7 pr-6 text-xs border rounded-md bg-card/80 border-border text-foreground/70 placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="搜索节点..."
+            placeholder={t('graph.searchPlaceholder')}
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
           />
@@ -244,12 +246,12 @@ export default function KnowledgeGraph({ data, loading, onNodeClick, highlightNo
           )}
         </div>
         <div className="flex gap-0.5">
-          <button className={`rounded-md px-2 py-1 text-xs font-medium transition ${colorMode === "type" ? "bg-primary/5 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground/70 hover:bg-muted"}`} onClick={() => setColorMode("type")}>类型</button>
-          <button className={`rounded-md px-2 py-1 text-xs font-medium transition ${colorMode === "community" ? "bg-primary/5 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground/70 hover:bg-muted"}`} onClick={() => setColorMode("community")}>社区</button>
+          <button className={`rounded-md px-2 py-1 text-xs font-medium transition ${colorMode === "type" ? "bg-primary/5 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground/70 hover:bg-muted"}`} onClick={() => setColorMode("type")}>{t('graph.colorMode.type')}</button>
+          <button className={`rounded-md px-2 py-1 text-xs font-medium transition ${colorMode === "community" ? "bg-primary/5 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:text-foreground/70 hover:bg-muted"}`} onClick={() => setColorMode("community")}>{t('graph.colorMode.community')}</button>
         </div>
         <button className={`rounded-md px-2 py-1 text-xs font-medium transition ${hideStructural ? "bg-success/10 text-success ring-1 ring-success/30" : "text-muted-foreground hover:text-foreground/70 hover:bg-muted"}`}
-          onClick={() => setHideStructural(!hideStructural)} title="隐藏结构性节点">隐藏结构</button>
-        <span className="text-xs ml-auto font-mono text-muted-foreground">{filteredData.nodes.length} nodes · {filteredData.edges.length} edges</span>
+          onClick={() => setHideStructural(!hideStructural)} title={t('graph.hideStructural.title')}>{t('graph.hideStructural')}</button>
+        <span className="text-xs ml-auto font-mono text-muted-foreground">{t('graph.stats', { nodes: filteredData.nodes.length, edges: filteredData.edges.length })}</span>
       </div>
 
       {/* Search results dropdown */}

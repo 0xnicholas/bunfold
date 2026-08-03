@@ -9,6 +9,7 @@
  */
 
 import { type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Checkbox } from 'tea-component';
 import { ChevronRightIcon } from 'tea-icons-react';
 import type { MountableAsset } from './types';
@@ -60,6 +61,7 @@ export function CollapseGroup({
   hideTotal?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="_memory-collapse-group">
       <button type="button" onClick={onToggle} className="_memory-collapse-group-header">
@@ -70,7 +72,7 @@ export function CollapseGroup({
         <span className="_memory-collapse-group-icon">{icon}</span>
         <span className="_memory-collapse-group-title">{title}</span>
         <span className="_memory-collapse-group-count">
-          {hideTotal ? `已绑定 ${selectedCount}` : `已选 ${selectedCount} / 共 ${totalCount}`}
+          {hideTotal ? t('shared.bound', { count: selectedCount }) : t('shared.selected', { selected: selectedCount, total: totalCount })}
         </span>
       </button>
       {open && <div className="_memory-collapse-group-body">{children}</div>}
@@ -91,6 +93,7 @@ export function AssetCheckList({
   readOnly?: boolean;
   disabledKeys?: Set<string>;
 }) {
+  const { t } = useTranslation();
   const groups = new Map<string, MountableAsset[]>();
   for (const a of assets) {
     if (!groups.has(a.group)) groups.set(a.group, []);
@@ -112,7 +115,7 @@ export function AssetCheckList({
                     <span className="_memory-asset-check-item-row">
                       <span className="_memory-asset-check-item-title">{a.title}</span>
                       <span className="_memory-asset-check-item-slug">
-                        {a.slug}{disabledKeys.has(a.key) ? ' · 自身记忆，固定保留' : notReady ? ` · ${a.status}` : ''}
+                        {a.slug}{disabledKeys.has(a.key) ? t('shared.selfMemory') : notReady ? ` · ${a.status}` : ''}
                       </span>
                     </span>
                   </Checkbox>

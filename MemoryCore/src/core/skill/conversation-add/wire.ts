@@ -24,6 +24,8 @@ import {
 } from "./agent-task-queue.js";
 import { SkillTriggerService } from "./trigger-service.js";
 import { SkillConversationAddHandler, type HandlerThresholds } from "./add-handler.js";
+import type { CompressOptions } from "./message-compressor.js";
+import type { OversizeOptions } from "./oversize-strategy.js";
 import {
   SkillConversationExtractWorker,
   type SkillCandidatesSink,
@@ -53,6 +55,12 @@ export interface WireConversationAddDeps {
 
   /** Handler 阈值覆盖 */
   thresholds?: Partial<HandlerThresholds>;
+
+  /** 单条 tool 消息头尾压缩规则覆盖 (对应 SkillConfig.compress)。 */
+  compressOptions?: Partial<CompressOptions>;
+
+  /** 兜底切分参数覆盖 (对应 SkillConfig.extraction 派生的 chunkMaxBytes / headKeepBytes / tailKeepBytes)。 */
+  oversizeOptions?: Partial<OversizeOptions>;
 
   /** Worker 参数覆盖 */
   workerId?: string;
@@ -104,13 +112,15 @@ export function wireConversationAdd(deps: WireConversationAddDeps): WiredConvers
     );
   }
 
-  // [skill-perf 2026-07-21] 把 logger 传下去，SkillTriggerService.archive 每段
-  // IO 打耗时 log（req_id 由上游 handler 通过 archive() 参数透传）。
-  const trigger = new SkillTriggerService({ buffer, queue, logger: deps.logger });
+  // [obs] SkillTriggerService / SkillConversationAddHandler 内部走 obsLogger 底座，
+  // 不再需要注入 logger —— obsLogger 自带 FileLogger + 后端 + try/catch 降级。
+  const trigger = new SkillTriggerService({ buffer, queue });
   const handler = new SkillConversationAddHandler({
     buffer,
     trigger,
     thresholds: deps.thresholds,
+    compressOptions: deps.compressOptions,
+    oversizeOptions: deps.oversizeOptions,
   });
 
   const sink = new SkillCoreSink({

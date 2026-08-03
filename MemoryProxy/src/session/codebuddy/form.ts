@@ -120,8 +120,12 @@ function buildFollowupQuestionArgs(data: FormData): { title: string; questions: 
 
   const taskOptions: string[] = [];
   for (const tk of team.tasks) {
-    const idSuffix = tk.task_id.slice(-8);
-    taskOptions.push(`${tk.task_name} (${idSuffix})`);
+    // 虚拟兜底条目（isDefault）不拼 id 后缀，反正只有一个不会重名歧义。
+    if (tk.isDefault) {
+      taskOptions.push(tk.task_name);
+    } else {
+      taskOptions.push(`${tk.task_name} (${tk.task_id.slice(-8)})`);
+    }
   }
   if (taskOptions.length > 0) {
     questions.push({

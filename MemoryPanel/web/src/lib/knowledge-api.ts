@@ -13,6 +13,7 @@
 
 import { getPanelSession } from './panelSession';
 import { formatApiErrorMessage } from './error-message';
+import i18n from '@/i18n';
 
 const BASE = '/api/v1/knowledge';
 
@@ -258,17 +259,17 @@ async function listAgentFixedKnowledge(agentId: string): Promise<KnowledgeFixedI
 // ========================= Wiki API =========================
 
 export function wikiStageLabel(status: WikiDetail['status'], internalStatus?: string | null): string {
-  if (status === 'missing') return '已丢失';
-  if (status === 'pending') return '排队中';
-  if (status === 'ready') return '已完成';
-  if (status === 'failed') return '失败';
-  if (status === 'draft') return '待加工';
+  if (status === 'missing') return i18n.t('wiki.status.missing');
+  if (status === 'pending') return i18n.t('wiki.status.pending');
+  if (status === 'ready') return i18n.t('wiki.status.ready');
+  if (status === 'failed') return i18n.t('wiki.status.failed');
+  if (status === 'draft') return i18n.t('wiki.status.draft');
   const map: Record<string, string> = {
-    scanning: '扫描源文档',
-    ingesting: '抽取文档内容',
-    'rebuilding-index': '重建索引',
+    scanning: i18n.t('knowledgeApi.stage.scanning'),
+    ingesting: i18n.t('knowledgeApi.stage.ingesting'),
+    'rebuilding-index': i18n.t('knowledgeApi.stage.rebuildingIndex'),
   };
-  return internalStatus ? (map[internalStatus] ?? internalStatus) : '加工中';
+  return internalStatus ? (map[internalStatus] ?? internalStatus) : i18n.t('knowledgeApi.stage.processing');
 }
 
 export function wikiProgressPercent(status: WikiDetail['status'], internalStatus?: string | null): number {
@@ -321,7 +322,7 @@ export const knowledgeApi = {
     /** 触发 ingest 后轮询 wiki/get，用真实 status/internal_status 驱动进度展示。 */
     ingestWithPolling: async (wikiId: string, callbacks: IngestStreamCallbacks, _teamId: string): Promise<void> => {
       try {
-        callbacks.onProgress?.({ type: 'file_start', detail: '正在触发抽取...', done: 0, total: 100, ts: Date.now() });
+        callbacks.onProgress?.({ type: 'file_start', detail: i18n.t('knowledgeApi.ingest.triggering'), done: 0, total: 100, ts: Date.now() });
         try {
           await knowledgeApi.wiki.ingest(wikiId);
         } catch (err: any) {
@@ -335,27 +336,27 @@ export const knowledgeApi = {
           const detail = await knowledgeApi.wiki.get(wikiId);
           const stage = wikiStageLabel(detail.status, detail.internal_status);
           const done = wikiProgressPercent(detail.status, detail.internal_status);
-          const pageHint = typeof detail.page_count === 'number' ? `，当前 ${detail.page_count} 页` : '';
+          const pageHint = typeof detail.page_count === 'number' ? i18n.t('knowledgeApi.ingest.currentPage', { count: detail.page_count }) : '';
           callbacks.onProgress?.({
             type: 'file_done',
-            detail: `第 ${attempt} 次检查：${stage}${pageHint}`,
+            detail: i18n.t('knowledgeApi.ingest.check', { attempt, stage, pageHint }),
             done,
             total: 100,
             ts: Date.now(),
           });
 
           if (detail.status === 'ready') {
-            callbacks.onProgress?.({ type: 'batch_done', detail: '抽取完成', done: 100, total: 100, ts: Date.now() });
+            callbacks.onProgress?.({ type: 'batch_done', detail: i18n.t('knowledgeApi.ingest.complete'), done: 100, total: 100, ts: Date.now() });
             const count = detail.page_count ?? 0;
             callbacks.onComplete?.({ total: count, ingested: count });
             return;
           }
           if (detail.status === 'failed') {
-            callbacks.onError?.(detail.sync_error || '抽取失败');
+            callbacks.onError?.(detail.sync_error || i18n.t('knowledgeApi.ingest.failed'));
             return;
           }
         }
-        callbacks.onError?.('抽取超时，请稍后刷新查看最新状态');
+        callbacks.onError?.(i18n.t('knowledgeApi.ingest.timeout'));
       } catch (err: any) {
         callbacks.onError?.(err.message || String(err));
       }
@@ -381,7 +382,7 @@ export const knowledgeApi = {
         '/wiki/page/read', { wiki_id: wikiId, refs: [path] }
       );
       const item = d.items?.[0];
-      if (item?.not_found) throw new Error(`页面不存在: ${path}`);
+      if (item?.not_found) throw new Error(i18n.t('knowledgeApi.pageNotFound', { path }));
       return { content: item?.content ?? '' };
     },
 
@@ -498,7 +499,7 @@ export async function pollWikiStatus(wikiId: string, maxAttempts = 30, intervalM
     if (detail.status === 'ready' || detail.status === 'failed') return detail;
     await new Promise(r => setTimeout(r, intervalMs));
   }
-  throw new Error(`Wiki ${wikiId} ingest 超时`);
+  throw new Error(i18n.t('knowledgeApi.wikiIngestTimeout', { wikiId }));
 }
 
 /** 轮询 code-graph sync 状态 */
@@ -508,5 +509,5 @@ export async function pollCodeGraphStatus(codeGraphId: string, maxAttempts = 30,
     if (detail.status === 'ready' || detail.status === 'failed') return detail;
     await new Promise(r => setTimeout(r, intervalMs));
   }
-  throw new Error(`CodeGraph ${codeGraphId} sync 超时`);
+  throw new Error(i18n.t('knowledgeApi.codeGraphSyncTimeout', { codeGraphId }));
 }

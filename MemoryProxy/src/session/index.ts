@@ -125,5 +125,6 @@ export async function handleSessionInit(
     userKey,
     spaceId,
     presetIdentity,
+    agentSource,
   );
 }

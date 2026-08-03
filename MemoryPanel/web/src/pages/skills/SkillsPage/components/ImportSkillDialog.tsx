@@ -24,6 +24,7 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import {
   createSkill,
@@ -33,6 +34,7 @@ import {
 } from '@/lib/skill-api';
 import { Alert, Button, Form, Input, Modal, Segment, Select } from 'tea-component';
 import { FolderOpenIcon } from 'tea-icons-react';
+import i18n from '@/i18n';
 import './import-skill-dialog.css';
 
 type Mode = 'directory' | 'session';
@@ -101,7 +103,7 @@ function partitionFiles(files: File[]): {
       skillName: null,
       mainFile: null,
       resources: [],
-      warning: '目录中找不到 SKILL.md。请确保至少有一个 SKILL.md 在根目录或 <skill-name>/ 下。'
+      warning: i18n.t('importSkill.directory.warning'),
     };
   }
   const mainSegments = mainRelPath.split('/');
@@ -146,6 +148,7 @@ export default function ImportSkillDialog(props: {
   const [result, setResult] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(props.agentId ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
 
   const partition = useMemo(() => (mode === 'directory' ? partitionFiles(pickedFiles) : null), [
     mode,
@@ -159,30 +162,30 @@ export default function ImportSkillDialog(props: {
     try {
       const agentId = props.target === 'fixed' ? (selectedAgentId || props.agentId || '') : '';
       if (props.target === 'fixed' && !agentId) {
-        throw new Error('请选择归属 Agent。');
+        throw new Error(t('importSkill.error.noAgent'));
       }
-      if (!props.teamId) throw new Error('缺少 team 上下文，无法导入。');
+      if (!props.teamId) throw new Error(t('importSkill.error.noTeam'));
 
       // ==== 对话导入：直接调 skill/extract ====
       if (mode === 'session') {
         const raw = sessionPayload.trim();
-        if (!raw) throw new Error('请粘贴对话 JSON。');
+        if (!raw) throw new Error(t('importSkill.error.noPayload'));
         let parsed: Record<string, unknown>;
         try {
           parsed = JSON.parse(raw);
         } catch (e) {
-          throw new Error(`对话 JSON 解析失败：${e instanceof Error ? e.message : String(e)}`);
+          throw new Error(t('importSkill.error.jsonParse', { msg: e instanceof Error ? e.message : String(e) }));
         }
         if (!Array.isArray((parsed as { messages?: unknown }).messages)) {
-          throw new Error('对话 JSON 缺少 messages 数组字段。');
+          throw new Error(t('importSkill.error.noMessages'));
         }
         const msgs = (parsed as { messages: unknown[] }).messages;
         if (msgs.length === 0) {
-          throw new Error('对话 messages 不能为空。');
+          throw new Error(t('importSkill.error.emptyMessages'));
         }
         // 后端 extract 接口限制 messages 最多 500 条（见 iWiki §3.13），
         if (msgs.length > 500) {
-          throw new Error(`对话消息过多（${msgs.length} 条），接口最多支持 500 条，请删减后重试。`);
+          throw new Error(t('importSkill.error.tooManyMessages', { count: msgs.length }));
         }
 
         // 组装 extract 入参。身份字段（user_id/team_id/agent_id）强制用当前 UI
@@ -237,20 +240,13 @@ export default function ImportSkillDialog(props: {
         const raced = await Promise.race([extractPromise, timeoutPromise]);
         if (raced === 'timeout') {
           softTimedOut = true;
-          setResult(
-            '提交成功，提取任务已受理。预计 1-3 分钟后完成，请稍后刷新 skill 列表查看结果。',
-          );
+          setResult(t('importSkill.result.session.accepted'));
         } else if (raced) {
-          setResult(
-            '提交成功，提取任务已受理。预计 1-3 分钟后完成，请稍后刷新 skill 列表查看结果。'
-              + `\n任务 ID：${raced.task_id}`,
-          );
+          setResult(t('importSkill.result.session', { taskId: raced.task_id }));
         } else {
           // extractPromise 被软超时后 catch 成 null 的分支（正常不会走到这里，
           // 因为软超时已经先设过 result 了），兜底保持一致文案。
-          setResult(
-            '提交成功，提取任务已受理。预计 1-3 分钟后完成，请稍后刷新 skill 列表查看结果。',
-          );
+          setResult(t('importSkill.result.session.accepted'));
         }
         setTimeout(() => props.onImported(), 1500);
         return;
@@ -258,14 +254,14 @@ export default function ImportSkillDialog(props: {
 
       // ==== 目录导入：走 v3 create + files/write ====
       if (!partition?.mainFile) {
-        throw new Error(partition?.warning ?? '请选择包含 SKILL.md 的目录。');
+        throw new Error(partition?.warning ?? t('importSkill.error.noMainFile'));
       }
       const content = await readAsUtf8(partition.mainFile);
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       const nameMatch = fmMatch?.[1].match(/^name:\s*(.+)$/m);
       const name = nameMatch?.[1].trim().replace(/^["']|["']$/g, '') || partition.skillName || '';
       if (!name) {
-        throw new Error('无法从 SKILL.md 或目录结构推断 skill 名称，请检查 frontmatter 或目录布局。');
+        throw new Error(t('importSkill.error.noName'));
       }
       const resourceFiles: { path: string; file: File; isBinary: boolean }[] = partition.resources.map(
         ({ path, file }) => ({ path, file, isBinary: !looksLikeText(file) }),
@@ -297,7 +293,7 @@ export default function ImportSkillDialog(props: {
         resources: resources.length ? resources : undefined,
       });
 
-      setResult(`导入成功：${name}（${resourceFiles.length} 个资源文件）`);
+      setResult(t('importSkill.result.directory', { name, count: resourceFiles.length }));
       setTimeout(() => props.onImported(), 800);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -312,26 +308,26 @@ export default function ImportSkillDialog(props: {
   const showAgentPicker = props.target === 'fixed' && !!props.agents;
 
   return (
-    <Modal visible caption="导入 Skill" size="l" onClose={props.onClose} disableEscape={submitting}>
+    <Modal visible caption={t('importSkill.caption')} size="l" onClose={props.onClose} disableEscape={submitting}>
       <Modal.Body>
-        <Alert type="info">上传 SKILL.md 目录，或粘贴一段对话让系统自动提炼出 skill。</Alert>
+        <Alert type="info">{t('importSkill.hint')}</Alert>
       {/* 归属 Agent —— 必选项。始终展示在导入方式上方，
           与 ChatMemoryPanel.ImportBlockDialog 一致：即便外层已经传了 agentId
           也允许在弹窗里重选。 */}
       {showAgentPicker && (
         <Form layout="vertical" style={{ width: '100%' }}>
           <Form.Item
-            label="归属 Agent（必选）"
-            extra="Skill 将作为该 agent 的固定资产 —— 仅当 task 关联了该 agent 时才会被加载。"
+            label={t('importSkill.agent')}
+            extra={t('importSkill.agent.extra')}
           >
             {props.agents!.length === 0 ? (
-              <Alert type="warning">当前 team 暂无 agent，无法导入。请先到团队管理中创建至少一个 agent。</Alert>
+              <Alert type="warning">{t('importSkill.agent.noAgent')}</Alert>
             ) : (
               <Select
                 size="full"
                 value={selectedAgentId}
                 onChange={setSelectedAgentId}
-                placeholder="-- 选择 Agent --"
+                placeholder={t('importSkill.agent.placeholder')}
                 options={props.agents!.map((a) => ({ value: a.id, text: `${a.name}（${a.id}）` }))}
               />
             )}
@@ -345,14 +341,14 @@ export default function ImportSkillDialog(props: {
         value={mode}
         onChange={(v) => setMode(v as Mode)}
         options={[
-          { value: 'directory', text: '目录导入' },
-          { value: 'session', text: '对话导入' },
+          { value: 'directory', text: t('importSkill.mode.directory') },
+          { value: 'session', text: t('importSkill.mode.session') },
         ]}
       />
 
       {mode === 'directory' && (
         <div className="_memory-isd-section">
-          <div className="_memory-isd-label">选择本地目录（应包含 SKILL.md 和可选的 files/ 子目录）</div>
+          <div className="_memory-isd-label">{t('importSkill.directory.label')}</div>
           {/*
             目录选择无 Tea 组件等价物，此处保留原生 input 作为唯一豁免，隐藏后由下方
             Tea Button 触发点击。webkitdirectory/directory 是非标准但广泛支持的浏览器
@@ -371,24 +367,24 @@ export default function ImportSkillDialog(props: {
             {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
           />
           <Button onClick={() => fileInputRef.current?.click()}>
-            <FolderOpenIcon size={14} /> 选择文件夹
+            <FolderOpenIcon size={14} /> {t('importSkill.directory.selectFile')}
           </Button>
           {pickedFiles.length > 0 && (
-            <span className="_memory-isd-picked-count">已选择 {pickedFiles.length} 个文件</span>
+            <span className="_memory-isd-picked-count">{t('importSkill.directory.picked', { count: pickedFiles.length })}</span>
           )}
           {pickedFiles.length > 0 && partition && (
             <div className="_memory-isd-partition-box">
               <div>
-                主文件：
+                {t('importSkill.directory.mainFile')}
                 {partition.mainFile ? (
                   <span className="_memory-isd-main-file">
                     {partition.mainFile.webkitRelativePath || partition.mainFile.name}
                   </span>
                 ) : (
-                  <span className="_memory-isd-error-text">未找到 SKILL.md</span>
+                  <span className="_memory-isd-error-text">{t('importSkill.directory.noSkillMd')}</span>
                 )}
               </div>
-              <div>资源文件：{partition.resources.length} 个</div>
+              <div>{t('importSkill.directory.resources', { count: partition.resources.length })}</div>
               {partition.resources.length > 0 && (
                 <ul className="_memory-isd-resource-list">
                   {partition.resources.map((r) => (
@@ -407,11 +403,12 @@ export default function ImportSkillDialog(props: {
       {mode === 'session' && (
         <div className="_memory-isd-section">
           <Alert type="info">
-            粘贴一段与该 agent 的对话，系统会自动从中提炼可复用的 skill 沉淀到该 agent 下。
-            对话 JSON 需包含 <span className="_memory-isd-mono-inline">messages</span> 数组。
+            {t('importSkill.session.hintPrefix')}
+            <span className="_memory-isd-mono-inline">messages</span>
+            {t('importSkill.session.hintSuffix')}
           </Alert>
           <Form layout="vertical" style={{ width: '100%' }}>
-            <Form.Item label="对话 JSON">
+            <Form.Item label={t('importSkill.session.label')}>
               <Input.TextArea
                 size="full"
                 value={sessionPayload}
@@ -422,11 +419,11 @@ export default function ImportSkillDialog(props: {
                     session_id: 'demo-user-extract-demo-1',
                     task_id: 'default',
                     messages: [
-                      { role: 'user', content: '我们的 PostgreSQL 14 主库今天又卡死了…' },
-                      { role: 'assistant', content: '先 ssh 到主库节点，查看慢查询日志…' },
-                      { role: 'tool_call', content: '调用 bash 执行: tail -100 /var/log/postgresql/slow.log' },
-                      { role: 'tool_result', content: 'Query duration: 120s | SELECT * FROM large_table WHERE ...' },
-                      { role: 'assistant', content: '发现一条慢查询耗时 120s，建议添加索引…' },
+                      { role: 'user', content: t('importSkill.sample.user') },
+                      { role: 'assistant', content: t('importSkill.sample.assistant') },
+                      { role: 'tool_call', content: t('importSkill.sample.toolCall') },
+                      { role: 'tool_result', content: t('importSkill.sample.toolResult') },
+                      { role: 'assistant', content: t('importSkill.sample.assistant2') },
                     ],
                   },
                   null,
@@ -451,12 +448,12 @@ export default function ImportSkillDialog(props: {
             || (mode === 'directory' ? !partition?.mainFile : !sessionPayload.trim())
             || (props.target === 'fixed' && !selectedAgentId)
           }
-          title={props.target === 'fixed' && !selectedAgentId ? '请先选择归属 agent' : ''}
+          title={props.target === 'fixed' && !selectedAgentId ? t('importSkill.error.noAgentHint') : ''}
           loading={submitting}
         >
-          {mode === 'session' ? '开始提取' : '导入 Skill'}
+          {mode === 'session' ? t('importSkill.session.submit') : t('importSkill.submit')}
         </Button>
-        <Button onClick={props.onClose} disabled={submitting}>取消</Button>
+        <Button onClick={props.onClose} disabled={submitting}>{t('importSkill.cancel')}</Button>
       </Modal.Footer>
     </Modal>
   );

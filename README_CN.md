@@ -43,7 +43,7 @@ $EDITOR .env       # 填入两组 LLM 参数（memory 组 + proxy 组）
 
 打开 Panel：[http://localhost:8125](http://localhost:8125)。
 
-完整安装文档（Memory Hub 单独部署 / Proxy + Claude Code 用法 / 停止清理 / 端口
+完整安装文档（Memory Hub 单独部署 / Proxy + Claude Code / CodeBuddy 用法 / 停止清理 / 端口
 说明等）见 [**INSTALL_CN.md**](./INSTALL_CN.md)（English: [INSTALL.md](./INSTALL.md)）。
 
 ### 从旧版本迁移数据
@@ -110,6 +110,7 @@ $EDITOR .env       # 填入两组 LLM 参数（memory 组 + proxy 组）
 - 在 Memory Hub 里创建 Team 和 Agent，审核、分享并配装记忆资产。
 - 统一管理 Owner、版本、状态、可见性、使用次数与 Agent 绑定。
 - `private` 严格属于 Owner；`team` 面向全队；`restricted` 通过 User / Role / Agent ACL 精确授权。
+- 角色分两层：**全局 System Admin** 管理用户与团队（建团队、录入成员），也可使用 Wiki、CodeGraph、Skill 等资产管理功能；**Team 内角色** 分为 Admin（团队管理员）和 Member（普通成员），负责团队内的资产协作与权限控制。资产归属通过 Owner 标记，Owner 自动获得对应资产的管理权限。
 <img width="" src="assets/images/asset.cn.png" alt="image.png" />
 
 
@@ -257,13 +258,13 @@ PersonaMem 检验 Agent 能否在长期交互后正确理解和运用用户信�
 - Wiki 和 CodeGraph 异步构建，需要等待一定时间处理才能 `ready`。
 - CodeGraph 当前首先支持公开 HTTPS 仓库；私有仓库和 SSH 凭证接入仍在完善。
 - Hub 已支持人工绑定资产；全自动记忆路由仍在迭代。
-- 当前提供 OpenClaw、Hermes 和 SDK 接入；更广泛的跨框架迁移仍在 Roadmap 中。
+- 当前提供 OpenClaw、Hermes、Claude Code、CodeBuddy 和 SDK 接入；更广泛的跨框架迁移仍在 Roadmap 中。
 
 ## 相关文档
 
 - [完整安装指南](./INSTALL_CN.md)（Memory Core + Hub + Proxy 一键部署）
 - [数据迁移工具（v2 → v3）](./MemoryCore/scripts/migrate-v2-to-v3/README_CN.md)（如果在用旧版并想迁移存量数据）
-- [Knowledge OpenAPI](./MemoryKnowledge/docs/api/openapi.yaml)
+- [Knowledge OpenAPI](./MemoryKnowledge/openapi.yaml)
 - [贡献指南](./CONTRIBUTING_CN.md)
 
 Agent Memory 还没有标准答案。Bug、文档、Benchmark、新框架适配，或者一个你觉得更好玩的 Memory Hub 用法，都欢迎。

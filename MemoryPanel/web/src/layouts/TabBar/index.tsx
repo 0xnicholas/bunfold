@@ -3,7 +3,7 @@
  *
  * 保留多标签页交互逻辑，使用 Tea Design Token 统一样式。
  */
-import { ITEM_ICON, PAGE_META, type PageId } from '@/constants/menu';
+import { ITEM_ICON, usePageMeta, type PageId } from '@/constants/menu';
 import './style.css';
 
 export function TabBar({
@@ -17,6 +17,7 @@ export function TabBar({
   onNavigate: (id: PageId) => void;
   onClose: (id: PageId) => void;
 }) {
+  const PAGE_META = usePageMeta();
   return (
     <div className="_memory-tabbar">
       {pages.map((id) => {

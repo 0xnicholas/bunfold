@@ -35,10 +35,30 @@ export interface SkillConfigInput {
     toolCallThreshold?: number;
     model?: string;
     maxIterations?: number;
-    /** Transcript head-tail truncation: chars to keep from the start (default 8000). */
-    headChars?: number;
-    /** Transcript head-tail truncation: chars to keep from the end (default 32000). */
-    tailChars?: number;
+    /**
+     * 单一"归档尺寸"旋钮（字节）。默认 40960 (40KB)。派生 7 个内部字段:
+     *   • Handler 的 bytesThreshold / requestCompressThresholdBytes = archiveBytes
+     *   • Oversize 兜底的 chunkMaxBytes = 2 × archiveBytes
+     *   • Oversize 兜底的 headKeepBytes / tailKeepBytes = archiveBytes
+     *   • Extractor transcript 截断的 headChars / tailChars = archiveBytes
+     * 语义: 归档 payload 目标大小 = archiveBytes，上限 = 2 × archiveBytes。
+     */
+    archiveBytes?: number;
+    /** Skill review 单次 LLM 调用输出 token 上限。不填 → 继承顶层 llm.maxTokens。 */
+    maxTokens?: number;
+  };
+
+  /**
+   * 单条大 tool 消息头尾压缩规则。只影响 tool_call / tool_result 单条 content
+   * 超阈值时的头尾切分；user/assistant/system 永不压缩。
+   */
+  compress?: {
+    /** 单条 tool 消息 content 超过多少字节才压缩。默认 2048 (2KB)。 */
+    toolContentThresholdBytes?: number;
+    /** 压缩后保留的头字节。默认 1024 (1KB)。 */
+    headBytes?: number;
+    /** 压缩后保留的尾字节。默认 1024 (1KB)。 */
+    tailBytes?: number;
   };
 
   resources?: {
@@ -73,10 +93,32 @@ export interface ResolvedSkillConfig {
     toolCallThreshold: number;
     model?: string;
     maxIterations: number;
-    /** Transcript head-tail truncation: chars to keep from the start (default 8000). */
+    /** 归档尺寸旋钮 (字节)。用户可见配置源；下面 7 个字段由它派生。 */
+    archiveBytes: number;
+    /** Skill review 单次 LLM 调用输出 token 上限；不填 → 由 runner 继承 llm.maxTokens。 */
+    maxTokens?: number;
+    // ↓↓↓ 以下 7 个由 archiveBytes 派生，用户不直接配 ↓↓↓
+    /** Handler: buffer 累计字节 ≥ 触发归档。= archiveBytes。 */
+    bytesThreshold: number;
+    /** Handler: 单次 add 请求 ≥ 强制走压缩路径。= archiveBytes。 */
+    requestCompressThresholdBytes: number;
+    /** Oversize 兜底: 归档 payload > 触发切分。= 2 × archiveBytes。 */
+    chunkMaxBytes: number;
+    /** Oversize 兜底: 切完保留的头字节。= archiveBytes。 */
+    headKeepBytes: number;
+    /** Oversize 兜底: 切完保留的尾字节。= archiveBytes。 */
+    tailKeepBytes: number;
+    /** Extractor transcript 截断: 保留头字符。= archiveBytes (字节数近似当字符数)。 */
     headChars: number;
-    /** Transcript head-tail truncation: chars to keep from the end (default 32000). */
+    /** Extractor transcript 截断: 保留尾字符。= archiveBytes。 */
     tailChars: number;
+  };
+
+  /** 单条大 tool 消息头尾压缩，参数与 CompressOptions 对齐。 */
+  compress: {
+    toolContentThresholdBytes: number;
+    headBytes: number;
+    tailBytes: number;
   };
 
   resources: {

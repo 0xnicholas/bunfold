@@ -6,7 +6,8 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Button, Justify, SearchBox, Segment, Select, Table, Tag } from 'tea-component';
+import { useTranslation } from 'react-i18next';
+import { Button, Justify, SearchBox, Segment, Select, Table } from 'tea-component';
 import {
   AddIcon,
   ChevronRightIcon,
@@ -15,7 +16,7 @@ import {
   ViewModuleIcon,
 } from 'tea-icons-react';
 import { canManageAsset, type Team, type Agent as StoreAgent } from '@/services';
-import { ACCENT_STYLES, emptyMountedCounts, type AgentMountedCounts } from './types';
+import { emptyMountedCounts, type AgentMountedCounts } from './types';
 import { Mounted } from './shared';
 
 const { scrollable } = Table.addons;
@@ -28,7 +29,7 @@ export default function AgentGrid({
   agentsLoading,
   mountedCounts,
   currentUser,
-  isAdmin,
+  isAdmin: _isAdmin,
   canSeeAllAgents,
   onCreateAgent,
   onEditAgent,
@@ -39,6 +40,7 @@ export default function AgentGrid({
   agentsLoading: boolean;
   mountedCounts: Record<string, AgentMountedCounts>;
   currentUser: string;
+  /** 保留接口兼容；admin 不再有特殊权限。 */
   isAdmin: boolean;
   /** 是否有权限看到 team 内全部 agent（admin / team admin）。普通用户只能看到自己的，无需 Owner 筛选。 */
   canSeeAllAgents: boolean;
@@ -46,6 +48,7 @@ export default function AgentGrid({
   onEditAgent: (agent: StoreAgent) => void;
   onDeleteAgent: (agent: StoreAgent) => void;
 }) {
+  const { t } = useTranslation();
   const [keyword, setKeyword] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -77,8 +80,8 @@ export default function AgentGrid({
   }, [agents, keyword, ownerFilter]);
 
   function canEdit(agent: StoreAgent): boolean {
-    // 全局 admin 当前是只读视图；其他用户沿用已有 owner / team admin 授权规则。
-    return !isAdmin && canManageAsset(
+    // admin 与 member 一致：只能操作自己 owner 的 agent（不再有全局 admin 特权）。
+    return canManageAsset(
       { owner_user_id: agent.owner_user_id, team_id: agent.team_id },
       activeTeam,
       currentUser,
@@ -88,16 +91,16 @@ export default function AgentGrid({
 
   function renderName(agent: StoreAgent, compact = false) {
     const editable = canEdit(agent);
-    const acc = ACCENT_STYLES[agent.accent];
     return (
       <button
         type="button"
         className={`_memory-agents-name-trigger${editable ? ' _memory-agents-name-trigger--editable' : ''}`}
         onClick={() => editable && onEditAgent(agent)}
         disabled={!editable}
-        title={editable ? '点击查看并编辑该 Agent' : `仅 owner（${agent.owner_user_id || '未设置'}）或 team 管理员可编辑`}
+        title={editable
+          ? t('agentGrid.card.edit.tooltip.can')
+          : t('agentGrid.card.edit.tooltip.cannot', { owner: agent.owner_user_id || t('agentGrid.card.ownerUnset') })}
       >
-        <span className={`_memory-agents-icon ${acc.bg}`}>{agent.icon}</span>
         <span className="_memory-agents-name" title={agent.name}>{agent.name}</span>
         {editable && <ChevronRightIcon size={compact ? 12 : 14} className="_memory-agents-chevron" />}
       </button>
@@ -107,9 +110,9 @@ export default function AgentGrid({
   function renderOwner(agent: StoreAgent) {
     const ownerIsMe = agent.owner_user_id === currentUser;
     return (
-      <Tag theme={ownerIsMe ? 'warning' : 'default'} size="sm">
-        {agent.owner_user_id || '未设置'}{ownerIsMe && '（你）'}
-      </Tag>
+      <span className={`_memory-agents-owner-tag${ownerIsMe ? ' _memory-agents-owner-tag--me' : ''}`}>
+        {agent.owner_user_id || t('agentGrid.card.ownerUnset')}{ownerIsMe && t('agentGrid.owner.you')}
+      </span>
     );
   }
 
@@ -129,11 +132,13 @@ export default function AgentGrid({
     <div className="_memory-agents-panel">
       <div className="_memory-agents-section-head">
         <div>
-          <h2 className="_memory-agents-section-title">Agents</h2>
+          <h2 className="_memory-agents-section-title">{t('agentGrid.title')}</h2>
           <div className="_memory-agents-section-subtitle">
-            当前 team「{activeTeam.name}」
-            <span className="_memory-mono-inline">（{activeTeam.team_id}）</span>
-            中由你创建的 Agent · {agentsLoading ? '加载中…' : `共 ${agents.length} 个`}
+            {t('agentGrid.subtitle', {
+              name: activeTeam.name,
+              id: activeTeam.team_id,
+              loading: agentsLoading ? t('agentGrid.loading') : t('agentGrid.subtitle.count', { count: agents.length }),
+            })}
           </div>
         </div>
       </div>
@@ -144,10 +149,9 @@ export default function AgentGrid({
             <Button
               type="primary"
               onClick={onCreateAgent}
-              style={{ visibility: isAdmin ? 'hidden' : 'visible' }}
-              title="在当前 team 下创建一个新 Agent"
+              title={t('agentGrid.create.tooltip')}
             >
-              <AddIcon size={12} /> 新建 Agent
+              <AddIcon size={12} /> {t('agentGrid.create')}
             </Button>
           }
           right={
@@ -155,7 +159,7 @@ export default function AgentGrid({
               <SearchBox
                 value={keyword}
                 onChange={setKeyword}
-                placeholder="搜索 Agent 名称 / 描述 / ID"
+                placeholder={t('agentGrid.search')}
               />
               {canSeeAllAgents && (
                 <Select
@@ -163,7 +167,7 @@ export default function AgentGrid({
                   onChange={setOwnerFilter}
                   appearance="button"
                   options={[
-                    { value: '', text: '全部 Owner' },
+                    { value: '', text: t('agentGrid.allOwners') },
                     ...ownerOptions.map((ownerId) => ({ value: ownerId, text: ownerId })),
                   ]}
                   matchButtonWidth
@@ -183,16 +187,28 @@ export default function AgentGrid({
       </Table.ActionPanel>
 
       {agentsLoading && agents.length === 0 ? (
-        <div className="_memory-agents-empty">正在加载 Agent…</div>
+        viewMode === 'card' ? (
+          // 卡片视图骨架屏：4 个占位卡 + shimmer 动画，风格与 AssetListPanel 一致
+          <div className="_memory-agents-skeleton-grid" aria-label="loading">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="_memory-agents-skeleton-card">
+                <div className="_memory-agents-skeleton-line _memory-agents-skeleton-line--name" />
+                <div className="_memory-agents-skeleton-line _memory-agents-skeleton-line--id" />
+                <div className="_memory-agents-skeleton-line _memory-agents-skeleton-line--desc" />
+                <div className="_memory-agents-skeleton-line _memory-agents-skeleton-line--meta" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="_memory-agents-empty">{t('agentGrid.loading')}</div>
+        )
       ) : filteredAgents.length === 0 ? (
         <div className="_memory-agents-empty">
           {agents.length === 0
-            ? isAdmin
-              ? '当前 team 下还没有 Agent'
-              : '还没有 Agent · 点击左上角「+ 新建 Agent」创建第一个'
+            ? t('agentGrid.empty.member')
             : canSeeAllAgents
-              ? '没有符合搜索或 Owner 筛选条件的 Agent'
-              : '没有符合搜索条件的 Agent'}
+              ? t('agentGrid.empty.filtered.all')
+              : t('agentGrid.empty.filtered.partial')}
         </div>
       ) : viewMode === 'card' ? (
         <div className="_memory-agents-card-grid">
@@ -201,12 +217,12 @@ export default function AgentGrid({
             return (
               <div key={agent.agent_id} className={`_memory-agents-card${editable ? ' _memory-agents-card--editable' : ''}`}>
                 <div className="_memory-agents-card-head">{renderName(agent)}</div>
-                <div className="_memory-agents-card-id">id: {agent.agent_id}</div>
-                <div className="_memory-agents-card-desc">{agent.description || '暂无描述'}</div>
+                <div className="_memory-agents-card-id">{t('agentGrid.card.id', { id: agent.agent_id })}</div>
+                <div className="_memory-agents-card-desc">{agent.description || t('common.noDescription')}</div>
                 <div className="_memory-agents-owner-row">
-                  <span>owner</span>
+                  <span>{t('agentGrid.card.owner')}</span>
                   {renderOwner(agent)}
-                  {!editable && <span className="_memory-agents-readonly">· 只读</span>}
+                  {!editable && <span className="_memory-agents-readonly">{t('agentGrid.card.readonly')}</span>}
                 </div>
                 {renderAssets(agent)}
                 <div className="_memory-agents-card-actions">
@@ -214,9 +230,9 @@ export default function AgentGrid({
                     type="text"
                     disabled={!editable}
                     onClick={() => onDeleteAgent(agent)}
-                    title={editable ? '删除该 Agent' : '你没有删除该 Agent 的权限'}
+                    title={editable ? t('agentGrid.card.delete.tooltip.can') : t('agentGrid.card.delete.tooltip.cannot')}
                   >
-                    <DeleteIcon size={12} /> 删除
+                    <DeleteIcon size={12} /> {t('agentGrid.card.delete')}
                   </Button>
                 </div>
               </div>
@@ -231,7 +247,7 @@ export default function AgentGrid({
           columns={[
             {
               key: 'name',
-              header: '名称',
+              header: t('agentGrid.table.name'),
               width: 240,
               render: (agent: StoreAgent) => renderName(agent, true),
             },
@@ -243,7 +259,7 @@ export default function AgentGrid({
             },
             {
               key: 'assets',
-              header: '挂载资产',
+              header: t('agentGrid.table.assets'),
               render: (agent: StoreAgent) => {
                 const counts = mountedCounts[agent.agent_id] ?? emptyMountedCounts();
                 return (
@@ -255,19 +271,19 @@ export default function AgentGrid({
             },
             {
               key: 'description',
-              header: '描述',
-              render: (agent: StoreAgent) => <span className="_memory-agents-list-description">{agent.description || '暂无描述'}</span>,
+              header: t('agentGrid.table.desc'),
+              render: (agent: StoreAgent) => <span className="_memory-agents-list-description">{agent.description || t('common.noDescription')}</span>,
             },
             {
               key: 'actions',
-              header: '操作',
+              header: t('agentGrid.table.actions'),
               width: 90,
               fixed: 'right',
               render: (agent: StoreAgent) => {
                 const editable = canEdit(agent);
                 return (
                   <Button type="link" disabled={!editable} onClick={() => onDeleteAgent(agent)}>
-                    删除
+                    {t('agentGrid.table.delete')}
                   </Button>
                 );
               },

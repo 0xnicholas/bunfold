@@ -1,19 +1,40 @@
+import { useTranslation } from 'react-i18next';
 import type { LayerMeta, ScopeTab } from './types';
 
-export const PROSE_CLASS =
-  'prose prose-sm prose-slate max-w-none prose-headings:my-2 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-pre:my-1.5';
+export function useLayers(): LayerMeta[] {
+  const { t } = useTranslation();
+  return [
+    { id: 'L0', label: t('memory.layer.L0.label'), short: t('memory.layer.L0.short'), desc: t('memory.layer.L0.desc'), tone: 'default' },
+    { id: 'L1', label: t('memory.layer.L1.label'), short: t('memory.layer.L1.short'), desc: t('memory.layer.L1.desc'), tone: 'brand' },
+    { id: 'L2', label: t('memory.layer.L2.label'), short: t('memory.layer.L2.short'), desc: t('memory.layer.L2.desc'), tone: 'success' },
+    { id: 'L3', label: t('memory.layer.L3.label'), short: t('memory.layer.L3.short'), desc: t('memory.layer.L3.desc'), tone: 'warning' },
+  ];
+}
 
-export const LAYERS: LayerMeta[] = [
-  { id: 'L0', label: 'L0 · 对话原文', short: '对话原文', desc: '原始对话 / 工具调用流水，不做压缩', tone: 'default' },
-  { id: 'L1', label: 'L1 · 原子记忆', short: '原子记忆', desc: '从原文抽取出来的最小事实 / 约束', tone: 'brand' },
-  { id: 'L2', label: 'L2 · 场景记忆', short: '场景记忆', desc: '围绕场景聚合的多条原子记忆总结', tone: 'success' },
-  { id: 'L3', label: 'L3 · 核心记忆', short: '核心记忆', desc: '沉淀的核心准则 / 模板 / 决策', tone: 'warning' },
-];
+export function useScopeTabLabels(): Record<ScopeTab, string> {
+  const { t } = useTranslation();
+  return {
+    all: t('memory.scope.all'),
+    team: t('memory.scope.team'),
+    fixed: t('memory.scope.fixed'),
+    scope: t('memory.scope.scope'),
+    personal: t('memory.scope.personal'),
+  };
+}
 
-export const SCOPE_TAB_LABELS: Record<ScopeTab, string> = {
-  all: '全部',
-  team: '团队资产',
-  fixed: 'Agent 资产',
-  scope: '可分配资产',
-  personal: '我的资产分配',
-};
+// Keep static export for backward compatibility — uses i18next global instance
+// so it reflects the current language without a hook. Prefer useScopeTabLabels() in components.
+import i18n from '@/i18n';
+export const SCOPE_TAB_LABELS: Record<ScopeTab, string> = new Proxy({} as Record<ScopeTab, string>, {
+  get(_target, prop: string) {
+    const map: Record<string, string> = {
+      all: 'memory.scope.all',
+      team: 'memory.scope.team',
+      fixed: 'memory.scope.fixed',
+      scope: 'memory.scope.scope',
+      personal: 'memory.scope.personal',
+    };
+    const key = map[prop];
+    return key ? i18n.t(key) : prop;
+  },
+});

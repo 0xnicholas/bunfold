@@ -267,7 +267,7 @@ export interface RedisSkillAgentTaskQueueOptions {
  * Redis key 前缀默认值。
  *
  * 生产建议：wire 层传入形如 `${memoryPrefix}:skill-conv` 的前缀，跟 memory 的
- * `keyPrefix`（例如 `tdai_memory_lincong_test_v3`）挂钩，避免不同环境的 Redis
+ * `keyPrefix`（例如 `tdai_memory_prod_v3`）挂钩，避免不同环境的 Redis
  * key 撞。默认值 `"skill-conv"` 只在没显式传时兜底。
  */
 const DEFAULT_PREFIX = "skill-conv";

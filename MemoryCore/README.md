@@ -141,7 +141,7 @@ Use the lightweight client adapter under `openclaw-plugin/`. It connects to an e
 Run from the repository root:
 
 ```bash
-bash MemoryCore/scripts/install-openclaw-plugin-v2.sh
+bash MemoryCore/scripts/install-openclaw-plugin.sh
 ```
 
 Common connection settings:

@@ -73,23 +73,24 @@ Open **<http://localhost:8125>** in your browser (Panel UI).
 - The first visit asks for a `user_key` — use the admin one printed at the
   end of `start-all.sh` (stored in `deploy/global-images/.admin-key`, a
   `sk-mem-...` string)
-- Once logged in you are `system_admin`. It can **create Teams and
-  sub-users**, but at this stage **cannot directly create other business
-  assets such as Agent / Wiki / Skill** (the business APIs enforce
-  `owner_user_id === caller`, and `system_admin` isn't yet in the
-  allow-list; this restriction will be lifted in a future release).
-- **Correct pattern**: admin creates a `normal` user → copy that user's
-  `user_key` → log out → log back in as the new user → everything from
-  here on (Team / Agent / Task) is owned by the new user.
+- Once logged in, admin can directly use asset management features like
+  Wiki, CodeGraph, and Skill, and create business assets such as Team /
+  Agent / Task.
+- If you prefer to separate ops from business (recommended), create a
+  `normal` business user → copy that user's `user_key` → log out → log
+  back in as the new user.
 
 > In short: admin is the "ops account" for managing users; business users
 > are the "app accounts" for managing assets. Even in a single-machine
-> local playground, keep this split — don't use the admin key to drive CC.
+> local playground, keeping this split is recommended — don't use the
+> admin key to drive CC.
+> Note: in 2.0.0-beta.1, admin could not own business assets; starting
+> from 2.0.0 stable, admin can directly operate on assets.
 
 Knowledge Service Swagger (optional, for API poking):
 <http://localhost:8424/docs>
 
-### Step 1.5: Admin creates a business user (required once)
+### Step 1.5: Admin creates a business user (optional, recommended for ops/business separation)
 
 Panel: top-left "Users" → "New" (or use the API directly):
 
@@ -108,6 +109,7 @@ value again after creation.
 
 Then log out of the panel and log back in with this new key — you're now
 a `normal` user and can create Team / Agent / Task under your own name.
+Of course, admin can also operate directly; this is just a recommended separation.
 
 ### Step 2: Create Team / Agent / Task in the panel
 
@@ -127,8 +129,7 @@ You'll want **at least 1 Team + 1 Agent** before you start; Task is optional.
 
 ### Step 3: Point Claude Code at the Proxy
 
-Use the **business user's** `user_key` (not the admin key — admin can't
-own assets yet, and proxy's sessionInit will show an empty picker):
+Use admin's or the business user's `user_key` (starting from 2.0.0 stable, admin can also own assets):
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8096/claude-code/default
@@ -145,6 +146,9 @@ claude --model <whatever PROXY_UPSTREAM_MODEL is set to>
   up in the next step's picker
 - `--model` uses the upstream model name you configured in
   `PROXY_UPSTREAM_MODEL` (proxy forwards to `PROXY_UPSTREAM_URL`)
+
+> 💡 **You can also use CodeBuddy with the Proxy** — see the
+> [Using Proxy with CodeBuddy](#using-proxy-with-codebuddy) section below.
 
 ### Step 4: First CC turn — pick Team → Agent → Task
 
@@ -204,11 +208,10 @@ Expect `tasksConsumed` / `tasksCompleted` to grow with dialogue.
 `PROXY_FULL_STACK=0`, restart: `PROXY_FULL_STACK=1 ./start-proxy.sh`.
 
 **Q: The picker is empty (or only shows entries owned by someone else)?**
-You're likely driving CC with the admin key. Admin **cannot own business
-assets** (current limitation), so its team list is empty. Fix: follow
-Step 1.5 to create a business user, then use that user's
-`default_user_key` as `ANTHROPIC_AUTH_TOKEN`. The business user must also
-have created at least one Team/Agent in the panel.
+Make sure the current account has created at least one Team and Agent in
+the panel. If using the admin account, ensure you've created the relevant
+assets; if using a business user, check that you've created Agents under
+the corresponding team.
 
 **Q: Panel shows "Panel API 8125 not started"?**
 `docker ps` and check `tdai-memory-hub` is healthy. If not, look at
@@ -273,6 +276,181 @@ knowledge blended into the system prompt) → forward to the upstream LLM.
 
 Disable the full pipeline (passthrough only): `PROXY_FULL_STACK=0 ./start-proxy.sh`.
 
+## Using Proxy with CodeBuddy
+
+[CodeBuddy](https://www.codebuddy.ai/) is Tencent's AI coding assistant IDE plugin. By configuring a custom model, you can route CodeBuddy's chat requests through the Proxy to get the same memory capabilities as Claude Code, directly within your IDE.
+
+### ⚠️ Version Restrictions
+
+> CodeBuddy versions **4.10.2, 4.10.3, and 4.10.4** have a known bug: these
+> versions do not send a `sessionId` in requests, preventing the Proxy from
+> completing session initialization.
+>
+> **Use CodeBuddy ≥ 4.10.5 or ≤ 4.10.1.**
+
+### Configuration
+
+Create or edit `~/.codebuddy/models.json` on your development machine (replace the API key):
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-20250514",
+      "name": "proxy-memory-agent",
+      "vendor": "claude",
+      "apiKey": "<business user's sk-mem-... user_key>",
+      "maxInputTokens": 200000,
+      "url": "http://127.0.0.1:8096/codebuddy/default",
+      "supportsToolCall": true,
+      "supportsImages": true
+    }
+  ]
+}
+```
+
+- `id`: a model ID supported by the Proxy's upstream LLM (must match `PROXY_UPSTREAM_MODEL`
+  or one of the models in the upstream configuration, e.g. `claude-sonnet-4-20250514`)
+- `name`: display name shown in the CodeBuddy chat panel (can be customized freely, e.g. `proxy-memory-agent`)
+- `vendor`: model provider label, used only for UI display (e.g. `claude`, `openai`) — does not affect actual requests
+- `apiKey`: the **business user's** `user_key` (same one used as
+  `ANTHROPIC_AUTH_TOKEN` for Claude Code; using the admin key directly
+  is not recommended)
+- `url`: Proxy address + `/codebuddy/default` path (same port as Claude Code,
+  default `8096`); `default` is the memory instance ID
+
+Once configured, select the model name in CodeBuddy's chat panel and start chatting.
+The session init flow is the same as Claude Code (pick Team → Agent → Task).
+
+## Using Proxy with Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com/docs/) is an open-source AI agent framework. By configuring extra headers, Hermes chat requests can be routed through the Proxy for team memory capabilities.
+
+### Configuration
+
+Edit `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  default: gpt-5.5
+  provider: custom
+  base_url: http://<proxy-host>:<port>/hermes/<spaceId>
+  api_key: <API Key from admin panel>
+  extra_headers:
+    x-team-id: <team_id from admin panel>
+    x-agent-id: <agent_id from admin panel>
+    x-task-id: <task_id from admin panel>
+    x-conversation-id: <user-defined session identifier>
+```
+
+- `base_url`: Proxy address + `/hermes/<spaceId>` path. `<spaceId>` is the memory instance ID (from the admin panel, usually `default`)
+- `api_key`: user's `user_key` (from admin panel "API Key" page)
+- `x-team-id` / `x-agent-id`: obtained from the admin panel, same as CodeBuddy / Claude Code
+- `x-task-id`: obtained from admin panel "Task Management" page. **Required in the current version** — missing this field causes session registration to fail and memory features won't work (see [Known limitation: x-task-id](#known-limitation-x-task-id))
+- `x-conversation-id`: user-defined session identifier (see [Known limitation: x-conversation-id](#known-limitation-x-conversation-id))
+
+## Using Proxy with OpenClaw
+
+[OpenClaw](https://github.com/openclaw/openclaw) is an open-source AI coding agent. By configuring a custom provider, OpenClaw requests can be routed through the Proxy.
+
+### Configuration
+
+Edit `~/.openclaw/openclaw.json`, add a provider under `models.providers`:
+
+```jsonc
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "memory-proxy": {
+        "baseUrl": "http://<proxy-host>:<port>/openclaw/<spaceId>",
+        "apiKey": "<API Key from admin panel>",
+        "api": "openai-completions",
+        "headers": {
+          "x-team-id": "<team_id from admin panel>",
+          "x-agent-id": "<agent_id from admin panel>",
+          "x-task-id": "<task_id from admin panel>",
+          "x-conversation-id": "<user-defined session identifier>"
+        },
+        "request": {
+          "allowPrivateNetwork": true
+        },
+        "models": [
+          {
+            "id": "gpt-5.5",
+            "name": "GPT-5.5",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 32000,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `baseUrl`: Proxy address + `/openclaw/<spaceId>` path
+- `apiKey`: user's `user_key`
+- `headers`: must include `x-team-id`, `x-agent-id`, `x-task-id`, `x-conversation-id`. `x-task-id` is required in the current version (see [Known limitation: x-task-id](#known-limitation-x-task-id))
+- `models[].id`: must match the model ID configured in the Proxy upstream
+
+## Using Proxy with Other Platforms (Generic)
+
+Beyond ClaudeCode / CodeBuddy / Hermes / OpenClaw, any OpenAI-compatible platform or custom-built agent can connect to the Proxy to access team memory capabilities.
+
+### Connection
+
+Point the platform's API base URL at the Proxy:
+
+```text
+http://<proxy-host>:<port>/<agent-source>/<spaceId>
+```
+
+- `<agent-source>`: must be one of the Proxy-supported values: `claude-code`, `codebuddy`, `hermes`, `openclaw`. For other platforms, you can impersonate one of these (e.g. use `codebuddy` as the identifier)
+- `<spaceId>`: memory instance ID (`default` for local deployments)
+
+The request path is automatically appended: `/v1/chat/completions` (OpenAI protocol) or `/v1/messages` (Anthropic protocol).
+
+### Required Headers
+
+| Header | Description |
+|--------|-------------|
+| `Authorization: Bearer <user_key>` | User's API key (from admin panel "API Key" page) |
+| `x-team-id` | Team ID |
+| `x-agent-id` | Agent ID |
+| `x-task-id` | Task ID (required in current version, see [Known limitation: x-task-id](#known-limitation-x-task-id)) |
+| `x-conversation-id` | Session identifier, managed by the client |
+
+All headers are required — the Proxy uses them to complete session registration directly, bypassing the interactive form. Platforms that cannot provide these headers will trigger session bypass (no memory injection or conversation recording).
+
+## Known limitation: `x-task-id`
+
+> ⚠️ **Current version limitation**: `x-task-id` is **required** for Hermes / OpenClaw.
+>
+> The Proxy's header auto-select mechanism requires all three of `x-team-id` + `x-agent-id` + `x-task-id` to complete session registration directly. Without `x-task-id`, the Proxy falls back to an interactive form flow — which Hermes / OpenClaw cannot respond to, resulting in session bypass (no memory injection or conversation recording).
+>
+> Inconveniences:
+>
+> 1. Users must create a Task in the admin panel beforehand and obtain the `task_id`, increasing onboarding friction.
+> 2. Switching tasks requires manually editing the config file.
+>
+> In the next version, we will make `x-task-id` optional: when not provided, the Proxy will auto-select the agent's default task or skip task binding entirely.
+
+## Known limitation: `x-conversation-id`
+
+> ⚠️ **Current version limitation**: Hermes and OpenClaw require `x-conversation-id` to be statically specified in the config file. This differs from Claude Code / CodeBuddy (where the SDK automatically manages the session ID).
+>
+> Current limitations:
+>
+> 1. **All requests sharing the same conversation ID belong to the same session** — memory injection and conversation recording are bound to this ID.
+> 2. **Starting a new conversation requires manually changing the conversation ID**, otherwise the previous session state continues.
+> 3. **Some clients may not carry extra headers on tool-call follow-up requests**, causing those turns to skip memory injection and conversation recording.
+>
+> In the next version, the Proxy will support automatic generation and management of conversation IDs, eliminating the need for clients to specify this field manually.
+
 ## Stop / cleanup
 
 ```bash
@@ -282,7 +460,7 @@ Disable the full pipeline (passthrough only): `PROXY_FULL_STACK=0 ./start-proxy.
 
 ## More
 
-Additional installation modes (OpenClaw, Hermes, SDK, running from source,
+Additional installation modes (OpenClaw, Hermes, CodeBuddy, SDK, running from source,
 K8s, platform notes) — see
 [`deploy/global-images/README.md`](./deploy/global-images/README.md) and
 [`MemoryCore/README.md`](./MemoryCore/README.md).

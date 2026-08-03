@@ -1,18 +1,16 @@
-"""TencentDB Agent Memory v3 Skill SDK — 14 ``/v3/skill/*`` endpoints:
+"""TencentDB Agent Memory v3 Skill SDK — 15 ``/v3/skill/*`` endpoints:
 ``create / update / patch / delete / get / list / search / versions
 / files/write / files/remove / files/read / listing / extract
-/ conversation/add``.
+/ conversation/add / conversation/force-archive``.
 
 Design & auth
 -------------
 
 Mirrors `src/gateway/skill-handlers.ts` 1:1. Unlike :class:`MemoryClient`,
-skill isolation fields (``team_id`` / ``agent_id`` / ``user_id`` / ``task_id``)
-are **all optional** at the server schema layer (see
-``src/gateway/skill-schemas.ts idFieldsShape`` — only cross-field rule is
-"agent_id requires team_id"). Callers pass optional defaults at construction
-and may override per call; missing IDs surface as server-side 40001/40301/40302
-rather than client-side exceptions.
+skill isolation fields are generally optional and may be provided as
+constructor defaults or per-call overrides. ``extract`` is the exception:
+``team_id`` / ``agent_id`` / ``user_id`` are required by the server contract
+and are validated locally before a request is sent.
 
 >>> from tencentdb_agent_memory.v3 import SkillClient
 >>> skills = SkillClient(
@@ -30,7 +28,9 @@ from __future__ import annotations
 import base64
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from .._http import AsyncHttpStub, HttpStub, Stub
+from .._http import Stub
+from .._v3_http import AsyncHttpStub, HttpStub
+from ..errors import ParamError
 
 _V3 = "/v3/skill"
 
@@ -56,6 +56,17 @@ SKILL_ERROR_CODE: Dict[str, int] = {
 
 def _strip_none(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in d.items() if v is not None}
+
+
+def _validate_extract(messages: List[Dict[str, Any]], isolation: Dict[str, Any]) -> None:
+    if not isinstance(messages, list) or not messages:
+        raise ParamError("extract requires at least one message")
+    missing = [
+        field for field in ("user_id", "team_id", "agent_id")
+        if not isinstance(isolation.get(field), str) or not isolation[field].strip()
+    ]
+    if missing:
+        raise ParamError(f"extract requires non-empty {', '.join(missing)}")
 
 
 class _SkillDefaults:
@@ -151,14 +162,14 @@ class SkillClient:
         user_id: Optional[str] = None,
         task_id: Optional[str] = None,
         timeout: float = 30,
-        verify: bool = False,
+        verify: bool = True,
         stub: Optional[Stub] = None,
     ) -> None:
         if stub is not None:
             self._stub = stub
         else:
             if not service_id:
-                raise ValueError("service_id must be provided")
+                raise ParamError("service_id must be provided")
             self._stub = HttpStub(endpoint, api_key, service_id, timeout=timeout, verify=verify)
         self._defaults = _SkillDefaults(team_id, agent_id, user_id, task_id)
 
@@ -472,6 +483,7 @@ class SkillClient:
             "reason": reason,
             "options": options,
         })
+        _validate_extract(messages, body)
         return self._stub.post(f"{_V3}/extract", body)
 
     def conversation_add(
@@ -516,6 +528,51 @@ class SkillClient:
         })
         return self._stub.post(f"{_V3}/conversation/add", body)
 
+    def conversation_force_archive(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        team_id: str,
+        agent_id: str,
+        space_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v3/skill/conversation/force-archive`` — manually archive
+        the current session buffer, bypassing the tool_call / bytes
+        thresholds. The third trigger condition alongside
+        :meth:`conversation_add`'s automatic archive triggers (see
+        ``docs/design/2026-07-15-skill-trigger-in-core-design.md``).
+
+        Like :meth:`conversation_add`, ``session_id / user_id / team_id /
+        agent_id`` are **required** kwargs, and this method does NOT
+        merge in constructor defaults. ``space_id`` follows the same
+        convention as :meth:`extract`: optional, server falls back to
+        ``auth.serviceId``. ``reason`` (≤ 2000 chars) is embedded in the
+        resulting archive; ``task_id`` is forwarded to
+        ``archive.task.task_ref_id``.
+
+        Returns one of two shapes:
+
+        - ``{"status": "empty", "message": "..."}`` — buffer had no
+          messages, nothing to archive.
+        - ``{"status": "archived", "task_id": ..., "archived_at_ms":
+          ..., "archive_key": "..."}`` — archive was written. Note the
+          coordinates are at the top level (not nested under
+          ``archived``), unlike :meth:`conversation_add`.
+        """
+        body = _strip_none({
+            "session_id": session_id,
+            "space_id": space_id,
+            "user_id": user_id,
+            "team_id": team_id,
+            "agent_id": agent_id,
+            "reason": reason,
+            "task_id": task_id,
+        })
+        return self._stub.post(f"{_V3}/conversation/force-archive", body)
+
     # ── lifecycle ─────────────────────────────────────────────────────
 
     def close(self) -> None:
@@ -546,14 +603,14 @@ class AsyncSkillClient:
         user_id: Optional[str] = None,
         task_id: Optional[str] = None,
         timeout: float = 30,
-        verify: bool = False,
+        verify: bool = True,
         stub: Optional[Stub] = None,
     ) -> None:
         if stub is not None:
             self._stub = stub
         else:
             if not service_id:
-                raise ValueError("service_id must be provided")
+                raise ParamError("service_id must be provided")
             self._stub = AsyncHttpStub(endpoint, api_key, service_id, timeout=timeout, verify=verify)
         self._defaults = _SkillDefaults(team_id, agent_id, user_id, task_id)
 
@@ -838,6 +895,7 @@ class AsyncSkillClient:
             "reason": reason,
             "options": options,
         })
+        _validate_extract(messages, body)
         return await self._stub.post(f"{_V3}/extract", body)
 
     async def conversation_add(
@@ -862,6 +920,29 @@ class AsyncSkillClient:
             "messages": messages,
         })
         return await self._stub.post(f"{_V3}/conversation/add", body)
+
+    async def conversation_force_archive(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        team_id: str,
+        agent_id: str,
+        space_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """See :meth:`SkillClient.conversation_force_archive` for the contract."""
+        body = _strip_none({
+            "session_id": session_id,
+            "space_id": space_id,
+            "user_id": user_id,
+            "team_id": team_id,
+            "agent_id": agent_id,
+            "reason": reason,
+            "task_id": task_id,
+        })
+        return await self._stub.post(f"{_V3}/conversation/force-archive", body)
 
     # ── lifecycle ─────────────────────────────────────────────────────
 

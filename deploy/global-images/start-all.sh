@@ -5,7 +5,8 @@
 # 最后起 proxy。任意一步失败会中止并打印容器日志。
 #
 # 用法：
-#   ./start-all.sh
+#   ./start-all.sh            # 本地已有镜像就直接用
+#   PULL=1 ./start-all.sh     # 先 docker pull 三个镜像，升级到最新 latest
 #
 # 前置：cp .env.example .env 并把两组 LLM 参数填好（REPLACE_ME → 真值）。
 

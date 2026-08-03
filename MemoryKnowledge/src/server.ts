@@ -25,6 +25,7 @@ import { createCodeGraphRoutes } from "./routes/code-graph.js";
 import { createToolsRoutes } from "./routes/tools.js";
 import { createHealthRoutes } from "./routes/health.js";
 import { createLlmBindingRoutes } from "./routes/llm-binding.js";
+import { createAutoSyncRoutes } from "./routes/auto-sync.js";
 import { accessLog } from "./middleware/response-envelope.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { createLogger } from "./logger.js";
@@ -79,11 +80,18 @@ export function createApp() {
     llmBindingStore: knowledgeModule.llmBindingStore,
   }));
 
+  // auto-sync admin — 定时同步调度器状态查询 + 手动触发
+  api.route("/", createAutoSyncRoutes({
+    scheduler: knowledgeModule.autoSyncScheduler,
+    config: knowledgeModule.autoSyncConfig,
+  }));
+
   app.route(config.apiPrefix, api);
 
-  // Swagger UI — serve OpenAPI spec from docs/api/openapi.yaml
+  // Swagger UI — serve OpenAPI spec from the package root (kept out of docs/
+  // so the runtime never depends on documentation files).
   const currentDir = dirname(fileURLToPath(import.meta.url));
-  const openapiPath = join(currentDir, "..", "docs", "api", "openapi.yaml");
+  const openapiPath = join(currentDir, "..", "openapi.yaml");
   try {
     const openapiContent = readFileSync(openapiPath, "utf-8");
     app.get("/openapi.json", (c) => {
@@ -92,7 +100,7 @@ export function createApp() {
     app.use("/docs", swaggerUI({ url: "/openapi.json" }));
     log.info("Swagger UI mounted at /docs");
   } catch {
-    log.warn("OpenAPI spec not found at docs/api/openapi.yaml, skipping Swagger UI");
+    log.warn("OpenAPI spec not found at openapi.yaml, skipping Swagger UI");
   }
 
   return { app, config, knowledgeModule };

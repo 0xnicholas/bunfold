@@ -1726,7 +1726,7 @@ export class TdaiGateway {
         reporter: adapterDeps.quotaReporter,
         logger: this.logger,
       });
-      this.logger.info("QuotaManager initialized (memoryLimit=50000, creditLimit=1000)");
+      this.logger.info("QuotaManager initialized (memoryLimit=10000, creditLimit=1000)");
     }
     // Allow overriding store mode independently from deployMode. Useful for
     // service-mode integration smoke tests where Redis + COS are real but no
@@ -1952,6 +1952,12 @@ export class TdaiGateway {
       runner: llmRunner,
       systemPrompt: SKILL_REVIEW_PROMPT,
       maxIterations: cfg?.extraction.maxIterations ?? 5,
+      // 透传 archiveBytes 派生的 head/tail chars + 独立的 maxTokens，
+      // 让 skill.extraction.archiveBytes 与 skill.extraction.maxTokens 生效
+      // (yaml 里改完不用改代码)。cfg 缺失时 SkillExtractor 内部有默认。
+      headChars: cfg?.extraction.headChars,
+      tailChars: cfg?.extraction.tailChars,
+      maxTokens: cfg?.extraction.maxTokens,
       logger: this.logger,
     } as import("../core/skill/skill-extractor.js").ExtractorOptions);
   }
@@ -1967,7 +1973,7 @@ export class TdaiGateway {
    *   - metadataService: 兜底登记 skill asset
    *
    * keyPrefix 拼 memory 的 redis.keyPrefix，例如
-   * `tdai_memory_lincong_test_v3:skill-conv` —— 跟老 skill 队列
+   * `tdai_memory_prod_v3:skill-conv` —— 跟老 skill 队列
    * (`{prefix}:skill:*`) 字面不撞。
    */
   private ensureConversationAddForInstance(instanceId: string): Promise<WiredConversationAdd> {
@@ -2003,6 +2009,38 @@ export class TdaiGateway {
       }
     });
     return inflight;
+  }
+
+  /**
+   * 把 resolved skill config 的归档/压缩派生字段翻译成 wireConversationAdd 的
+   * thresholds / compressOptions / oversizeOptions 覆盖参数。cfg 缺失时返回空对象,
+   * wire 层退回内置默认 (与旧行为等价)。
+   *
+   * 让 yaml 里的 skill.extraction.archiveBytes / skill.compress 生效不用改代码。
+   */
+  private buildSkillWireOverrides(): Pick<
+    Parameters<typeof wireConversationAdd>[0],
+    "thresholds" | "compressOptions" | "oversizeOptions"
+  > {
+    const cfg = this.core.getResolvedSkillConfig();
+    if (!cfg) return {};
+    return {
+      thresholds: {
+        toolCallThreshold: cfg.extraction.toolCallThreshold,
+        bytesThreshold: cfg.extraction.bytesThreshold,
+        requestCompressThresholdBytes: cfg.extraction.requestCompressThresholdBytes,
+      },
+      compressOptions: {
+        toolContentThresholdBytes: cfg.compress.toolContentThresholdBytes,
+        headBytes: cfg.compress.headBytes,
+        tailBytes: cfg.compress.tailBytes,
+      },
+      oversizeOptions: {
+        chunkMaxBytes: cfg.extraction.chunkMaxBytes,
+        headKeepBytes: cfg.extraction.headKeepBytes,
+        tailKeepBytes: cfg.extraction.tailKeepBytes,
+      },
+    };
   }
 
   private async buildConversationAddForInstance(instanceId: string): Promise<WiredConversationAdd> {
@@ -2044,7 +2082,9 @@ export class TdaiGateway {
       extractor,
       logger: this.logger,
       workerId: `${this.config.instanceId ?? "gateway"}:${instanceId}:skill-conv-worker`,
-      // Handler 阈值默认对齐 §2 —— tool_call ≥ 10 或 bytes ≥ 40KB
+      // 归档 / 压缩 / 兜底 参数从 resolved skill config 派生，
+      // 让 skill.extraction.archiveBytes + skill.compress yaml 改动即时生效。
+      ...this.buildSkillWireOverrides(),
     });
 
     this.logger.info(
@@ -2112,6 +2152,8 @@ export class TdaiGateway {
       logger: this.logger,
       workerId: `${this.config.instanceId ?? "gateway"}:${instanceId}:skill-conv-worker`,
       skipWorker,
+      // 归档 / 压缩 / 兜底 参数由 resolved skill config 派生 (跟 service 模式一致)
+      ...this.buildSkillWireOverrides(),
     });
 
     this.logger.info(

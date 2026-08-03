@@ -17,6 +17,7 @@ import type {
   TaskDetail,
   TeamOption,
 } from "../types.js";
+import { DEFAULT_TASK_LABEL } from "../types.js";
 import { SessionStore } from "../store.js";
 import { buildSessionInfo } from "../registrar.js";
 import { injectSessionContextWithToggles } from "../context-injector.js";
@@ -95,6 +96,19 @@ async function fetchTeamsAndAgents(
         metadataClient.listAgents(t.team_id, userId),
         metadataClient.listTasks(t.team_id),
       ]);
+      const tasks = tasksRaw.map((tk) => ({
+        task_id: tk.task_id,
+        task_name: tk.title,
+      }));
+      // 见 claude-code/init.ts fetchTeamsAndAgents 的同款注释：defaultTaskId
+      // 在源头 unshift 到 tasks 列表头部，下游 form/extractor 走既有路径。
+      if (config.defaultTaskId) {
+        tasks.unshift({
+          task_id: config.defaultTaskId,
+          task_name: DEFAULT_TASK_LABEL,
+          isDefault: true,
+        });
+      }
       return {
         team_id: t.team_id,
         team_name: t.name,
@@ -103,10 +117,7 @@ async function fetchTeamsAndAgents(
           agent_name: a.name,
           description: a.description ?? undefined,
         })),
-        tasks: tasksRaw.map((tk) => ({
-          task_id: tk.task_id,
-          task_name: tk.title,
-        })),
+        tasks,
       };
     }),
   );
@@ -188,7 +199,7 @@ async function completeRegistration(
       `[session-init:cb] session=${compositeKey} no user_id available → bypass`,
     );
     await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-    return { intercepted: false, bypassed: true };
+    return { intercepted: false, bypassed: true, justRegistered: true };
   }
   // 与 CC 侧一致：只有 team + agent + task 三者齐全才注入。task_id 缺失一律 bypass。
   // CodeBuddy 的 team+agent+task 在同一 form 里提交，用户如果没选 task 就走 bypass。
@@ -197,7 +208,7 @@ async function completeRegistration(
       `[session-init:cb] session=${compositeKey} agent=${resolved.agent_id} without task → bypass (task required for injection)`,
     );
     await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-    return { intercepted: false, bypassed: true };
+    return { intercepted: false, bypassed: true, justRegistered: true };
   }
   const regData = buildRegistrationData(resolved, cachedTeams, sessionKey, regUserId);
   if (!regData) {
@@ -205,13 +216,15 @@ async function completeRegistration(
       `[session-init:cb] session=${compositeKey} agent=${resolved.agent_id} not bound to any team → bypass`,
     );
     await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-    return { intercepted: false, bypassed: true };
+    return { intercepted: false, bypassed: true, justRegistered: true };
   }
 
   let agentDetail: AgentDetail | null = null;
   let taskDetail: TaskDetail | null = null;
 
   if (metadataClient) {
+    // 当 task_id 是 defaultTaskId（虚拟值）时，跳过 getTask——内核不存在该 task。
+    const shouldFetchTask = regData.task_id && regData.task_id !== config.defaultTaskId;
     const [agentRes, taskRes] = await Promise.allSettled([
       metadataClient.getAgent(resolved.agent_id).then((a) => ({
         id: a.agent_id,
@@ -219,8 +232,8 @@ async function completeRegistration(
         description: a.description ?? undefined,
         prompt: a.prompt ?? undefined,
       })),
-      regData.task_id
-        ? metadataClient.getTask(regData.task_id).then((t) => ({
+      shouldFetchTask
+        ? metadataClient.getTask(regData.task_id!).then((t) => ({
             id: t.task_id,
             name: t.title,
             description: t.description ?? undefined,
@@ -299,8 +312,9 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
+  agentSource: string = "codebuddy",
 ): Promise<SessionInitResult> {
-  const compositeKey = `codebuddy:${sessionKey}`;
+  const compositeKey = `${agentSource}:${sessionKey}`;
   if (sessionKey === "unknown" || !sessionKey) return { intercepted: false };
 
   const state = store.get(compositeKey);
@@ -347,7 +361,7 @@ export async function handleSessionInit(
         taskDetail: null,
         bypassed: true,
       } as SessionInitState);
-      return { intercepted: false, bypassed: true };
+      return { intercepted: false, bypassed: true, justRegistered: true };
     }
 
     const totalAgents = teams.reduce((acc, t) => acc + t.agents.length, 0);
@@ -367,7 +381,7 @@ export async function handleSessionInit(
         taskDetail: null,
         bypassed: true,
       } as SessionInitState);
-      return { intercepted: false, bypassed: true };
+      return { intercepted: false, bypassed: true, justRegistered: true };
     }
 
     // ── Header-driven pre-selection: skip forms when identity is provided ──
@@ -389,7 +403,7 @@ export async function handleSessionInit(
             taskDetail: null,
             bypassed: true,
           } as SessionInitState);
-          return { intercepted: false, bypassed: true };
+          return { intercepted: false, bypassed: true, justRegistered: true };
         }
         console.warn(`[session-init:cb] session=${compositeKey} preset mismatch → fallback to form`);
         // fall through to the normal asset_confirm flow below
@@ -481,7 +495,7 @@ export async function handleSessionInit(
         bypassed: true,
       } as SessionInitState);
       console.log(`[session-init:cb] session=${compositeKey} user chose no-asset → bypass`);
-      return { intercepted: false, messages: messages as Record<string, unknown>[], bypassed: true };
+      return { intercepted: false, messages: messages as Record<string, unknown>[], bypassed: true, justRegistered: true };
     }
 
     if (choice === true) {
@@ -536,7 +550,7 @@ export async function handleSessionInit(
     if (state.attemptCount >= config.maxRetries) {
       console.warn(`[session-init:cb] session=${compositeKey} asset-confirm max retries, abandoning`);
       await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-      return { intercepted: false, bypassed: true };
+      return { intercepted: false, bypassed: true, justRegistered: true };
     }
     await store.set(compositeKey, state);
     const fd: FormData = {
@@ -579,7 +593,7 @@ export async function handleSessionInit(
     if (state.attemptCount >= config.maxRetries) {
       console.warn(`[session-init:cb] session=${compositeKey} team-select max retries, abandoning`);
       await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-      return { intercepted: false, bypassed: true };
+      return { intercepted: false, bypassed: true, justRegistered: true };
     }
     await store.set(compositeKey, state);
     const fd: FormData = {
@@ -634,7 +648,7 @@ export async function handleSessionInit(
     if (state.attemptCount >= config.maxRetries) {
       console.warn(`[session-init:cb] session=${compositeKey} max retries, abandoning`);
       await store.set(compositeKey, { status: "initialized", bypassed: true } as SessionInitState);
-      return { intercepted: false, bypassed: true };
+      return { intercepted: false, bypassed: true, justRegistered: true };
     }
     await store.set(compositeKey, state);
     const fd: FormData = {

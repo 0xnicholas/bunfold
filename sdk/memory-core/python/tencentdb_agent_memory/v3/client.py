@@ -34,13 +34,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from .._http import AsyncHttpStub, HttpStub, Stub
+from .._http import Stub
+from .._v3_http import AsyncHttpStub, HttpStub
 from ..errors import ParamError
 
 logger = logging.getLogger(__name__)
 
 
 _V3 = "/v3"
+_UNSET = object()
 
 
 def _strip_none(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -145,7 +147,7 @@ class MemoryClient:
         session_id: Optional[str] = None,
         task_id: Optional[str] = None,
         timeout: float = 30,
-        verify: bool = False,
+        verify: bool = True,
         stub: Optional[Stub] = None,
     ) -> None:
         _validate_construction(team_id, agent_id, user_id)
@@ -153,7 +155,7 @@ class MemoryClient:
             self._stub = stub
         else:
             if not service_id:
-                raise ValueError("service_id must be provided")
+                raise ParamError("service_id must be provided")
             self._stub = HttpStub(endpoint, api_key, service_id, timeout=timeout, verify=verify)
         self._iso = _IsolationCtx(team_id, agent_id, user_id, session_id, task_id)
 
@@ -165,25 +167,23 @@ class MemoryClient:
         team_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        session_id: Any = _UNSET,
+        task_id: Any = _UNSET,
     ) -> "MemoryClient":
-        """Return a clone sharing the same stub but with selected isolation fields overridden.
+        """Return a clone sharing the transport with selected isolation fields overridden.
 
-        罕见的"跨 agent / 跨 session 调用"场景使用；返回的新 client 共享底层 HTTP transport。
+        Pass ``session_id=None`` or ``task_id=None`` to explicitly clear a bound
+        value. Omitting either argument keeps the current value.
         """
         new_team = team_id or self._iso.team_id
         new_agent = agent_id or self._iso.agent_id
         new_user = user_id or self._iso.user_id
-        # session_id 显式传 ""/None 不覆盖；显式传非空字符串才覆盖
-        new_session = session_id if session_id is not None else self._iso.session_id
+        new_session = self._iso.session_id if session_id is _UNSET else session_id
+        new_task = self._iso.task_id if task_id is _UNSET else task_id
         _validate_construction(new_team, new_agent, new_user)
         clone = object.__new__(MemoryClient)
         clone._stub = self._stub
-        clone._iso = _IsolationCtx(
-            new_team, new_agent, new_user, new_session,
-            task_id if task_id is not None else self._iso.task_id,
-        )
+        clone._iso = _IsolationCtx(new_team, new_agent, new_user, new_session, new_task)
         return clone
 
     # -- L0 Conversation ---------------------------------------------------
@@ -256,12 +256,19 @@ class MemoryClient:
         message_ids: Optional[List[str]] = None,
         session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """``POST /v3/conversation/delete`` — *message_ids* 和 *session_id* 二选一。"""
+        """``POST /v3/conversation/delete`` — require at least one selector."""
+        if message_ids is not None and (
+            not message_ids or any(not isinstance(item, str) or not item for item in message_ids)
+        ):
+            raise ParamError("message_ids must be a non-empty list of non-empty strings")
+        resolved_session = self._iso.resolve_session(session_id)
+        if message_ids is None and not resolved_session:
+            raise ParamError("delete_conversation requires message_ids or session_id")
         return self._stub.post(
             f"{_V3}/conversation/delete",
             _strip_none({
                 **self._iso.base_body(),
-                "session_id": self._iso.resolve_session(session_id),
+                "session_id": resolved_session,
                 "message_ids": message_ids,
             }),
         )
@@ -490,7 +497,7 @@ class AsyncMemoryClient:
         session_id: Optional[str] = None,
         task_id: Optional[str] = None,
         timeout: float = 30,
-        verify: bool = False,
+        verify: bool = True,
         stub: Optional[Stub] = None,
     ) -> None:
         _validate_construction(team_id, agent_id, user_id)
@@ -498,7 +505,7 @@ class AsyncMemoryClient:
             self._stub = stub
         else:
             if not service_id:
-                raise ValueError("service_id must be provided")
+                raise ParamError("service_id must be provided")
             self._stub = AsyncHttpStub(endpoint, api_key, service_id, timeout=timeout, verify=verify)
         self._iso = _IsolationCtx(team_id, agent_id, user_id, session_id, task_id)
 
@@ -508,20 +515,19 @@ class AsyncMemoryClient:
         team_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        session_id: Any = _UNSET,
+        task_id: Any = _UNSET,
     ) -> "AsyncMemoryClient":
+        """Clone this client; pass ``None`` to clear a bound session/task."""
         new_team = team_id or self._iso.team_id
         new_agent = agent_id or self._iso.agent_id
         new_user = user_id or self._iso.user_id
-        new_session = session_id if session_id is not None else self._iso.session_id
+        new_session = self._iso.session_id if session_id is _UNSET else session_id
+        new_task = self._iso.task_id if task_id is _UNSET else task_id
         _validate_construction(new_team, new_agent, new_user)
         clone = object.__new__(AsyncMemoryClient)
         clone._stub = self._stub
-        clone._iso = _IsolationCtx(
-            new_team, new_agent, new_user, new_session,
-            task_id if task_id is not None else self._iso.task_id,
-        )
+        clone._iso = _IsolationCtx(new_team, new_agent, new_user, new_session, new_task)
         return clone
 
     # -- L0 Conversation ---------------------------------------------------
@@ -588,11 +594,18 @@ class AsyncMemoryClient:
         message_ids: Optional[List[str]] = None,
         session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if message_ids is not None and (
+            not message_ids or any(not isinstance(item, str) or not item for item in message_ids)
+        ):
+            raise ParamError("message_ids must be a non-empty list of non-empty strings")
+        resolved_session = self._iso.resolve_session(session_id)
+        if message_ids is None and not resolved_session:
+            raise ParamError("delete_conversation requires message_ids or session_id")
         return await self._stub.post(
             f"{_V3}/conversation/delete",
             _strip_none({
                 **self._iso.base_body(),
-                "session_id": self._iso.resolve_session(session_id),
+                "session_id": resolved_session,
                 "message_ids": message_ids,
             }),
         )

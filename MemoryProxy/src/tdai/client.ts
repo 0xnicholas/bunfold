@@ -16,6 +16,44 @@ interface TdaiEnvelope<T = unknown> {
   data?: T;
 }
 
+const TDAI_MESSAGE_CONTENT_MAX_CHARS = 8192;
+const TDAI_CONVERSATION_MAX_MESSAGES = 100;
+
+/**
+ * Split messages to fit the gateway schema without losing content or breaking
+ * UTF-16 surrogate pairs. The gateway validates string.length, so this limit
+ * intentionally uses JavaScript code units rather than UTF-8 bytes.
+ */
+function chunkConversationMessages(messages: TdaiMessage[]): TdaiMessage[] {
+  return messages.flatMap((message) => {
+    if (message.content.length <= TDAI_MESSAGE_CONTENT_MAX_CHARS) return [message];
+
+    const chunks: TdaiMessage[] = [];
+    let start = 0;
+    while (start < message.content.length) {
+      let end = Math.min(start + TDAI_MESSAGE_CONTENT_MAX_CHARS, message.content.length);
+      if (
+        end < message.content.length
+        && isHighSurrogate(message.content.charCodeAt(end - 1))
+        && isLowSurrogate(message.content.charCodeAt(end))
+      ) {
+        end -= 1;
+      }
+      chunks.push({ role: message.role, content: message.content.slice(start, end) });
+      start = end;
+    }
+    return chunks;
+  });
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xD800 && code <= 0xDBFF;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xDC00 && code <= 0xDFFF;
+}
+
 // ── ACL types ─────────────────────────────────────────────────────────────
 export type AclAction = "read" | "write" | "delete" | "grant";
 
@@ -52,22 +90,34 @@ export class TdaiClient {
 
   async addConversation(identity: TdaiIdentity, messages: TdaiMessage[]): Promise<void> {
     if (!this.isEnabled() || !this.config.writeL0 || messages.length === 0) return;
-    log.info("tdai-recorder:write-l0", { team: identity.teamId, session: identity.sessionId, msgs: messages.length, userLen: (messages[0]?.content ?? "").length });
-    await this.postForCtx(
-      "/v3/conversation/add",
-      { teamId: identity.teamId, userId: identity.userId, agentId: identity.agentId },
-      {
-        team_id: identity.teamId,
-        user_id: identity.userId,
-        agent_id: identity.agentId,
-        session_id: identity.sessionId,
-        task_id: identity.taskId,
-        messages,
-      },
-      identity.sessionId,
-      identity.taskId,
-      { includeSession: true, includeTask: true },
-    );
+
+    const chunkedMessages = chunkConversationMessages(messages);
+    log.info("tdai-recorder:write-l0", {
+      team: identity.teamId,
+      session: identity.sessionId,
+      msgs: messages.length,
+      chunks: chunkedMessages.length,
+      userLen: (messages[0]?.content ?? "").length,
+    });
+
+    for (let offset = 0; offset < chunkedMessages.length; offset += TDAI_CONVERSATION_MAX_MESSAGES) {
+      const batch = chunkedMessages.slice(offset, offset + TDAI_CONVERSATION_MAX_MESSAGES);
+      await this.postForCtx(
+        "/v3/conversation/add",
+        { teamId: identity.teamId, userId: identity.userId, agentId: identity.agentId },
+        {
+          team_id: identity.teamId,
+          user_id: identity.userId,
+          agent_id: identity.agentId,
+          session_id: identity.sessionId,
+          task_id: identity.taskId,
+          messages: batch,
+        },
+        identity.sessionId,
+        identity.taskId,
+        { includeSession: true, includeTask: true },
+      );
+    }
   }
 
   async searchL1(identity: TdaiIdentity, query: string): Promise<TdaiL1Memory[]> {

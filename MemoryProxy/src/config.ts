@@ -8,7 +8,7 @@ const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
 export const DEFAULT_CONFIG: ProxyConfig = {
   server: { host: "0.0.0.0", port: 8096, forwardTimeoutMs: 600_000 },
-  upstream: { url: DEFAULT_UPSTREAM, apiKey: "" },
+  upstream: { url: DEFAULT_UPSTREAM, apiKey: "", agents: {} },
   log: {
     file: "",
     verbose: false,
@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
     rotate: { maxSizeBytes: 100 * 1024 * 1024, backupLimit: 10 },
   },
   opik: { enabled: false, url: "", apiKey: "", stripRequestLogContent: false },
-  langfuse: { enabled: false, host: "", publicKey: "", secretKey: "" },
+  langfuse: { enabled: false, host: "", publicKey: "", secretKey: "", debug: false },
   clickhouse: {
     enabled: false,
     url: "",
@@ -64,6 +64,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   },
   costGuard: {
     enabled: false,
+    markerOptIn: false,
     agentProfile: "auto",
     options: {},
   },
@@ -75,6 +76,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   injection: {
     enabled: false,
     injectors: ["skill", "knowledge", "tdai-memory"],
+    assetReflection: { markerOptIn: false },
   },
   // Extraction (write-side) defaults to fully permissive so that a config
   // without the `extraction:` block behaves identically to the pre-gate
@@ -130,7 +132,6 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   skillRuntime: {
     allowLlmWrite: false,
   },
-  agentUpstreams: {},
   auth: {
     enabled: false,
     url: "",
@@ -138,6 +139,8 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   },
   systemUsers: [],
   admin: { apiKey: "" },
+  memCommand: { enabled: false, allowedCommands: [] },
+  ccRequestRouting: { enabled: false },
 };
 
 /** Load and parse a YAML config file. Returns empty object on missing file. */
@@ -197,11 +200,13 @@ export interface CliOverrides {
 function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
   const raw: Record<string, unknown> = { ...(yaml.costGuard ?? {}) };
   const enabled = raw.enabled;
+  const markerOptIn = raw.markerOptIn;
   const agentProfile = raw.agentProfile;
   const anthropicUpstream = raw.anthropicUpstream;
 
   // Everything else is opaque private options — never parsed by the host.
   delete raw.enabled;
+  delete raw.markerOptIn;
   delete raw.agentProfile;
   delete raw.anthropicUpstream;
   const options: Record<string, unknown> = raw;
@@ -211,6 +216,7 @@ function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
 
   const result: CostGuardConfig = {
     enabled: typeof enabled === "boolean" ? enabled : DEFAULT_CONFIG.costGuard.enabled,
+    markerOptIn: typeof markerOptIn === "boolean" ? markerOptIn : DEFAULT_CONFIG.costGuard.markerOptIn,
     agentProfile: typeof agentProfile === "string" ? agentProfile : DEFAULT_CONFIG.costGuard.agentProfile,
     options,
   };
@@ -222,6 +228,30 @@ function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
     result.anthropicUpstream = { url: (anthropicUpstream as { url: string }).url };
   }
   return result;
+}
+
+/**
+ * Parse `upstream.agents` from raw YAML into the normalized `AgentUpstreamEntry`
+ * map. Entries without a non-empty `url` are silently dropped — an empty url
+ * would just fall back to the global upstream, so keeping the entry adds only
+ * noise (and would make "did I configure this right?" harder to answer at
+ * a glance).
+ */
+function parseUpstreamAgents(
+  raw: Record<string, { url?: string; apiKey?: string } | null | undefined> | undefined,
+): Record<string, { url: string; apiKey?: string }> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, { url: string; apiKey?: string }> = {};
+  for (const [name, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry !== "object") continue;
+    const url = (entry as { url?: unknown }).url;
+    if (typeof url !== "string" || url.length === 0) continue;
+    const apiKey = (entry as { apiKey?: unknown }).apiKey;
+    out[name] = typeof apiKey === "string" && apiKey.length > 0
+      ? { url, apiKey }
+      : { url };
+  }
+  return out;
 }
 
 /**
@@ -246,6 +276,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         yaml.upstream?.url ??
         DEFAULT_CONFIG.upstream.url,
       apiKey: yaml.upstream?.apiKey ?? DEFAULT_CONFIG.upstream.apiKey,
+      agents: parseUpstreamAgents(yaml.upstream?.agents),
     },
     log: {
       file: overrides.logFile ?? yaml.log?.file ?? DEFAULT_CONFIG.log.file,
@@ -276,6 +307,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       host: yaml.langfuse?.host ?? DEFAULT_CONFIG.langfuse.host,
       publicKey: yaml.langfuse?.publicKey ?? DEFAULT_CONFIG.langfuse.publicKey,
       secretKey: yaml.langfuse?.secretKey ?? DEFAULT_CONFIG.langfuse.secretKey,
+      debug: yaml.langfuse?.debug ?? DEFAULT_CONFIG.langfuse.debug,
     },
     clickhouse: {
       enabled: yaml.clickhouse?.enabled ?? DEFAULT_CONFIG.clickhouse.enabled,
@@ -348,6 +380,13 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       externalGatewayUrl: typeof yaml.injection?.externalGatewayUrl === "string" && yaml.injection.externalGatewayUrl.trim() !== ""
         ? yaml.injection.externalGatewayUrl.trim().replace(/\/$/, "")
         : undefined,
+      // 只接受 boolean；yaml 缺省或类型错走 default（关）。跟 costGuard.markerOptIn
+      // 同姿势，保证线上未配 assetReflection: 段的 yaml 完全无感。
+      assetReflection: {
+        markerOptIn: typeof yaml.injection?.assetReflection?.markerOptIn === "boolean"
+          ? yaml.injection.assetReflection.markerOptIn
+          : DEFAULT_CONFIG.injection.assetReflection!.markerOptIn,
+      },
     },
     extraction: {
       enabled: yaml.extraction?.enabled ?? DEFAULT_CONFIG.extraction.enabled,
@@ -358,6 +397,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     maxRetries: yaml.sessionInit?.maxRetries ?? DEFAULT_CONFIG.sessionInit.maxRetries,
     injectAgentContext: yaml.sessionInit?.injectAgentContext ?? DEFAULT_CONFIG.sessionInit.injectAgentContext,
     injectTaskContext: yaml.sessionInit?.injectTaskContext ?? DEFAULT_CONFIG.sessionInit.injectTaskContext,
+    defaultTaskId: typeof yaml.sessionInit?.defaultTaskId === "string" && yaml.sessionInit.defaultTaskId.trim()
+      ? yaml.sessionInit.defaultTaskId.trim()
+      : undefined,
     headerAutoSelect: {
       enabled: yaml.sessionInit?.headerAutoSelect?.enabled ?? DEFAULT_CONFIG.sessionInit.headerAutoSelect!.enabled,
       teamHeader: (yaml.sessionInit?.headerAutoSelect?.teamHeader ?? DEFAULT_CONFIG.sessionInit.headerAutoSelect!.teamHeader).toLowerCase(),
@@ -415,10 +457,6 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         yaml.skillRuntime?.allowLlmWrite ??
         DEFAULT_CONFIG.skillRuntime.allowLlmWrite,
     },
-    agentUpstreams: {
-      anthropic: yaml.agentUpstreams?.anthropic ?? {},
-      openai: yaml.agentUpstreams?.openai ?? {},
-    },
     auth: {
       enabled: yaml.auth?.enabled ?? DEFAULT_CONFIG.auth.enabled,
       url: yaml.auth?.url ?? DEFAULT_CONFIG.auth.url,
@@ -447,6 +485,17 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         (process.env.TDAI_PROXY_ADMIN_API_KEY ?? "").trim() ||
         yaml.admin?.apiKey ||
         DEFAULT_CONFIG.admin.apiKey,
+    },
+    memCommand: {
+      enabled: yaml.memCommand?.enabled ?? DEFAULT_CONFIG.memCommand.enabled,
+      allowedCommands: Array.isArray(yaml.memCommand?.allowedCommands)
+        ? yaml.memCommand.allowedCommands.filter((c: unknown) => typeof c === "string")
+        : DEFAULT_CONFIG.memCommand.allowedCommands,
+    },
+    ccRequestRouting: {
+      enabled:
+        (yaml as { ccRequestRouting?: { enabled?: boolean } }).ccRequestRouting?.enabled
+        ?? DEFAULT_CONFIG.ccRequestRouting.enabled,
     },
   };
 }

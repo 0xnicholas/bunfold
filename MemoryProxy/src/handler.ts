@@ -17,6 +17,10 @@ import {
   langfuseTurnTraceId,
   type LangfuseTurnContext,
 } from "./langfuse.js";
+import {
+  buildLangfuseInputChat,
+  buildRequestDebugMetadata,
+} from "./common/langfuse-debug.js";
 import { countHumanTurns } from "./turnSeq.js";
 import type { ProxyConfig } from "./types.js";
 import {
@@ -25,7 +29,7 @@ import {
   resolveLatestUserQuery,
   type ForwardTarget,
 } from "./guard-adapter.js";
-import { matchWhitelistEndpoint } from "./routes/whitelist.js";
+import { hasCostGuardMarker, matchWhitelistEndpoint } from "./routes/whitelist.js";
 import { writeRequestLog } from "./requestLog.js";
 import { tryReportCreditFromPath, extractSpaceIdFromPath } from "./credit-reporter.js";
 import { resolveModelId, isModelInPricing } from "./pricing.js";
@@ -250,9 +254,10 @@ function buildUpstreamBody(
  */
 function buildUpstreamHeaders(
   c: Context,
-  config: ProxyConfig,
+  _config: ProxyConfig,
   target: ForwardTarget,
   sessionKey?: string,
+  effectiveApiKey?: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
@@ -262,10 +267,12 @@ function buildUpstreamHeaders(
   }
   headers["content-type"] = "application/json";
 
-  // Only inject the default upstream credential when the extension didn't
-  // supply its own auth headers for this target.
-  if (config.upstream.apiKey && !target.authHeaders) {
-    headers["authorization"] = `Bearer ${config.upstream.apiKey}`;
+  // `effectiveApiKey` is pre-resolved by the caller — see the resolveEffective
+  // block near the call site. Non-empty → inject as server-side Bearer;
+  // empty/undefined → passthrough (client's own Authorization survives).
+  // cost-guard's `target.authHeaders` still gets to override everything.
+  if (effectiveApiKey && !target.authHeaders) {
+    headers["authorization"] = `Bearer ${effectiveApiKey}`;
   }
 
   if (target.authHeaders) {
@@ -561,6 +568,7 @@ export async function handleChatCompletions(
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
   let injectedSkipped = !conversationId;
+  let sessionJustRegistered = false;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
   if (config.sessionInit?.enabled && conversationId) {
     try {
@@ -591,6 +599,14 @@ export async function handleChatCompletions(
       // (initialized or bypassed). Pending / mid-form states MUST fall through
       // to handleSessionInit so the state machine can advance to the next form.
       const isTerminalState = recovered?.status === "initialized";
+      // 记录本 turn 是否真的走了 handleSessionInit state machine（详见 anthropicHandler
+      // 对称位置的注释）。sessionJustRegistered = wentThrough && justRegistered，覆盖
+      // 正常注册 + bypass 两种终态转换（bypass 分支现在也带 justRegistered=true），让
+      // mem-command 拦截块能在 bypass 转换那一 turn 通过 checkFirst 兜底捞出用户最初
+      // 的 mem: 命令并返回"未初始化"文案，避免透传给上游 LLM 幻觉回答。
+      // L2b recovery 分支 justRegistered=true 只是 prewarm 信号，走 recovered 分支时
+      // wentThroughSessionInitStateMachine=false 会自然过滤掉，不进 sessionJustRegistered。
+      let wentThroughSessionInitStateMachine = false;
       if (recovered && isTerminalState) {
         // Recovery hit: keep original messages, only re-inject <session_context>
         // so this turn's system message carries agent/task context again.
@@ -616,6 +632,7 @@ export async function handleChatCompletions(
           justRegistered: true, // triggers prewarm to refill hook cache
         };
       } else {
+        wentThroughSessionInitStateMachine = true;
         initResult = await handleSessionInit(
           sessionKey,
           userId || null,
@@ -637,6 +654,8 @@ export async function handleChatCompletions(
       }
 
       console.log(`[injection-debug] initResult session=${sessionKey} intercepted=${initResult.intercepted} bypassed=${initResult.bypassed} justRegistered=${initResult.justRegistered} hasSessionInfo=${!!initResult.sessionInfo} hasAgentDetail=${!!initResult.agentDetail}`);
+      // 见 anthropicHandler 对称位置：只在真正走 sessionInit state machine 时继承。
+      if (wentThroughSessionInitStateMachine && initResult.justRegistered) sessionJustRegistered = true;
 
       // Case 1.5: Bypass path → skip ALL injection hooks
       if (initResult.bypassed) {
@@ -728,6 +747,100 @@ export async function handleChatCompletions(
     }
   }
 
+  // ── mem: command intercept ────────────────────────────────────────────────
+  // 位置对齐 anthropicHandler.ts:847 —— session init 完成后、injection 之前。
+  // 命中时：执行命令 → 写 L0 → 触发 skill extract → 伪造 OpenAI 响应返回，跳过
+  // injection（不破坏 KV cache）和上游转发（零 token 消耗）。配置开关
+  // memCommand.enabled 关闭时此段完全不执行，走原有链路。
+  //
+  // 解决的坑：CodeBuddy 走 OpenAI 协议命中本 handler，之前 mem-command intercept
+  // 只挂在 anthropicHandler，CB 用户发 `mem:help` 会直接透传到上游 LLM，返回
+  // LLM 幻觉出来的"帮助文本"（含 mem:atoms/mem:profile/mem:conversations 等
+  // 根本不存在的命令）。本次抓包 (langfuse trace d814929a...) 实证后补齐。
+  //
+  // 请求分类：OpenAI 协议不做 CC 的 fork/sidequery 分流（handler.ts 没接 CC
+  // routing），所有请求都视为 main —— 与 codebuddy adapter classifyRequest 一致。
+  if (config.memCommand?.enabled) {
+    const { parseMemCommand, isMemCommandAllowed, executeMemCommand, buildMemResponse } = await import("./mem-command/index.js");
+    // 常规检测：最后一条 user message
+    let memCmd = parseMemCommand(body as Record<string, unknown>, agentSource);
+    // Session init 状态机在本 turn 完成终态（初始化 or bypass）时，最后一条
+    // user message 是 init 交互回答（比如"否"），额外检查第一条 user message
+    // —— 用户最初的原始意图。bypass 场景下 sessionInfo=null 走"未初始化"分支
+    // 返回文案，避免首条 mem: 命令被吞进历史后落到 LLM 透传里。
+    if (!memCmd && sessionJustRegistered) {
+      memCmd = parseMemCommand(body as Record<string, unknown>, agentSource, { checkFirst: true });
+    }
+    if (memCmd && isMemCommandAllowed(config.memCommand, memCmd.command)) {
+      // 会话未初始化时，命令不可用（同 anthropic 侧提示）
+      if (!sessionInfo || injectedSkipped) {
+        const errText = `⚠️ 会话未初始化，命令不可用。请先完成 session 初始化（选择 Team/Agent）后重试。`;
+        const errResponse = buildMemResponse(errText, {
+          protocol: "openai",
+          stream: isStream,
+          requestId: `mem-cmd-${Date.now()}`,
+        });
+        console.log(`[mem-command] cmd=${memCmd.command} session=${sessionKey} blocked: session not initialized`);
+        return errResponse;
+      }
+      const memResult = await executeMemCommand(memCmd, {
+        sessionKey,
+        agentSource,
+        config,
+        spaceId,
+        userId,
+        apiKey: apiKey || "",
+        sessionInfo: sessionInfo as Record<string, unknown>,
+        protocol: "openai",
+        stream: isStream,
+        args: memCmd.args,
+        // OpenAI 协议无 extended thinking 概念，恒 false
+      });
+
+      // L0 写入 — 同步 await 保证落盘再返回（跟主对话路径的 trackWrite/withL0Retry
+      // 兜底不同，这里 mem 命令是"仅这一次"路径，必须显式等）。
+      const tdaiClientForMem = createTdaiClient(config, spaceId);
+      const tdaiIdentityForMem = deriveTdaiIdentity({
+        sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
+        userId: userId || null,
+        sessionKey,
+      });
+      if (tdaiClientForMem && tdaiIdentityForMem && isExtractionAllowed(config, "tdai-memory")) {
+        const userMsg = { role: "user" as const, content: memCmd.rawMessage };
+        try {
+          await recordTdaiTurn(tdaiClientForMem, tdaiIdentityForMem, userMsg, memResult.messageText);
+        } catch (err: unknown) {
+          console.error("[mem-command] L0 write error:", err);
+        }
+      }
+
+      // Skill extract trigger — 保证对话轮次计数正常累积（跟 anthropic 侧对称）
+      if (isExtractionAllowed(config, "skill")) {
+        try {
+          // OpenAI 协议 assistant content 是字符串，normalize-conversation 那侧
+          // 会走 convertOpenAIAssistant 兜底处理 string 形态。
+          const assistantMsg = { role: "assistant", content: memResult.messageText };
+          await triggerSkillExtractIfReady({
+            config,
+            sessionKey,
+            agentSource,
+            sessionInfo: sessionInfo as Record<string, unknown>,
+            inputMessages: messages as unknown[],
+            assistantMessage: assistantMsg,
+            protocol: "openai",
+            assetCapabilities,
+          });
+        } catch (err: unknown) {
+          console.warn("[mem-command] skill extract trigger error:", err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      console.log(`[mem-command] cmd=${memCmd.command} session=${sessionKey} success=${memResult.success}`);
+
+      return memResult.response;
+    }
+  }
+
   const tdaiClient = assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
   const tdaiIdentity = injectedSkipped
     ? null
@@ -755,11 +868,14 @@ export async function handleChatCompletions(
         spaceId,
         sessionKey,
         turnSeq: injectionTurnSeq,
+        // 透传原始请求路径 —— AssetReflectionInjector 用它判断 `/analyse` marker。
+        // 其它 injector 不依赖此字段。
+        requestPath: c.req.path,
         custom: sessionInfo
           ? {
               session: sessionInfo,
               assetCapabilities,
-              ...(apiKey?.startsWith('sk-mem-') ? { userKey: apiKey } : {}),
+              userKey: apiKey || undefined,
             }
           : undefined,
       });
@@ -773,7 +889,19 @@ export async function handleChatCompletions(
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
 
   // ── Resolve forward target (opaque extension — no routing logic here) ──
-  const agentOpenAIUpstream = agentFromPath ? config.agentUpstreams.openai?.[agentFromPath] : undefined;
+  // upstream.agents[agent] is a single map keyed by agent name — same lookup
+  // as anthropicHandler. Empty / missing entry → fall back to upstream.url,
+  // preserving legacy behavior for configs that don't declare `agents:` at all.
+  const agentUpstreamEntry = agentFromPath ? config.upstream.agents?.[agentFromPath] : undefined;
+  // Per-agent apiKey resolution — three cases:
+  //   (a) no entry in agents map           → global upstream.apiKey (兜底)
+  //   (b) entry present, apiKey empty      → "" (passthrough, keep client key)
+  //   (c) entry present, apiKey non-empty  → agent.apiKey (server-side key)
+  // Presence of an entry (case b/c) cuts the global fallback — that's what
+  // lets one proxy serve mixed server-key / client-key agents at once.
+  const effectiveApiKey = agentUpstreamEntry
+    ? (agentUpstreamEntry.apiKey ?? "")
+    : config.upstream.apiKey;
   // Normalize the request path to the canonical upstream endpoint so the
   // extension's URL joining matches the host whitelist behavior.
   const forwardEndpoint = matchWhitelistEndpoint(c.req.path)?.upstreamEndpoint ?? "/chat/completions";
@@ -788,12 +916,18 @@ export async function handleChatCompletions(
     hasTools,
     body,
     modelId,
-    defaultUpstreamUrl: agentOpenAIUpstream ?? config.upstream.url,
+    defaultUpstreamUrl: agentUpstreamEntry?.url ?? config.upstream.url,
     requestPath: forwardEndpoint,
     headers: lcHeaders,
     traceId,
     startTime,
     spaceId,
+    // markerOptIn=false (default/prod): every request goes through the router
+    //   regardless of the URL (`/cost-guard` routes are 404 in this mode).
+    // markerOptIn=true (test env): only requests with the `/cost-guard`
+    //   segment activate the router; bare paths passthrough.
+    useGuard: config.costGuard.markerOptIn ? hasCostGuardMarker(c.req.path) : true,
+    agentName: agentFromPath,
   });
 
   // ── Create pipeline logger ──────────────────────────────────────────────
@@ -823,6 +957,23 @@ export async function handleChatCompletions(
     userQuery: resolveLatestUserQuery(config, lcHeaders, c.req.path, body, messages),
   };
 
+  // ── Langfuse debug metadata (only when config.langfuse.debug=true) ────────
+  // CB / cursor / windsurf 走 OpenAI 协议命中本 handler；开 debug 时把请求
+  // 结构 + 客户端指纹塞进 Langfuse observationMetadata，供抓包分析用。
+  // 默认关（{}），不污染线上 trace。详见 common/langfuse-debug.ts。
+  const langfuseDebug = config.langfuse.debug === true;
+  const debugMetadata = buildRequestDebugMetadata({
+    debug: langfuseDebug,
+    body: body as Record<string, unknown>,
+    headers: reqHeaders,
+    agentSource,
+    // 本 handler 不做 CC 客户端的 fork/sidequery 分流（只 anthropicHandler 走那套）
+    spaceId,
+    turnSeq,
+    requestPath: c.req.path,
+    protocol: "openai",
+  });
+
   // ── Opik: create trace ───────────────────────────────────────────────────
   const forkTraceId = opikCreateTrace(config, {
     traceId,
@@ -844,7 +995,7 @@ export async function handleChatCompletions(
   writeRequestLog(config, body);
 
   // ── Build upstream request ───────────────────────────────────────────────
-  const upstreamHeaders = buildUpstreamHeaders(c, config, target, sessionKey);
+  const upstreamHeaders = buildUpstreamHeaders(c, config, target, sessionKey, effectiveApiKey);
   const upstreamBody = buildUpstreamBody(body, target);
   // Retry headers: preserve original client headers (x-request-id, user-agent,
   // etc.), then force the primary upstream's auth — retry always goes to the
@@ -857,8 +1008,11 @@ export async function handleChatCompletions(
       originalHeaders[k] = v;
     }
   }
-  if (config.upstream.apiKey) {
-    originalHeaders["authorization"] = `Bearer ${config.upstream.apiKey}`;
+  // Retry uses the same effective key as the primary path — when it
+  // resolves to "" (agent entry present but no apiKey), retry also runs
+  // on the client's own key, preserving the passthrough intent.
+  if (effectiveApiKey) {
+    originalHeaders["authorization"] = `Bearer ${effectiveApiKey}`;
   }
 
   // Inject stream_options.include_usage for OpenAI compat
@@ -897,10 +1051,10 @@ export async function handleChatCompletions(
       model: target.model,
       startTime,
       endTime: new Date().toISOString(),
-      input: flattenMessagesForOpik(messages),
+      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
       statusMessage: err instanceof Error ? err.message : "Upstream request failed",
       extraTags: ["error"],
-      observationMetadata: { stage: "forward" },
+      observationMetadata: { stage: "forward", ...debugMetadata },
     });
     return c.json({ error: "Upstream request failed" }, 502);
   }
@@ -950,11 +1104,11 @@ export async function handleChatCompletions(
         model: effectiveModel,
         startTime,
         endTime: new Date().toISOString(),
-        input: messages,
+        input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
         status: upstreamResp.status,
         statusMessage: errText.slice(0, 500),
         extraTags: ["error"],
-        observationMetadata: { stage: "upstream", stream: true },
+        observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
       });
       pipe.streamDone(null);
       return new Response(clientPassStream, { status: upstreamResp.status, headers: respHeaders });
@@ -986,6 +1140,8 @@ export async function handleChatCompletions(
       lf,
       spaceId,
       upstreamRequestId,
+      langfuseDebug,
+      debugMetadata,
     };
     const passthrough = createUsageTapTransform(tapCtx);
     const tappedStream = upstreamResp.body.pipeThrough(passthrough);
@@ -1096,7 +1252,7 @@ export async function handleChatCompletions(
       model: effectiveModel,
       startTime,
       endTime,
-      input: flattenMessagesForOpik(messages),
+      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
       output: assistantMessage,
       usage,
       traceName: lf.traceName,
@@ -1105,8 +1261,8 @@ export async function handleChatCompletions(
       tags: lf.tags,
       traceInput: lf.userQuery || undefined,
       traceOutput: assistantMessage ?? undefined,
-      traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta },
-      observationMetadata: { retried, ...logMeta },
+      traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
+      observationMetadata: { retried, ...logMeta, ...debugMetadata },
     });
   } else if (upstreamResp.status >= 400) {
     pipe.error("UPSTREAM_4xx", `status=${upstreamResp.status} body=${respText.slice(0, 1000)}`);
@@ -1115,11 +1271,11 @@ export async function handleChatCompletions(
       model: effectiveModel,
       startTime,
       endTime,
-      input: flattenMessagesForOpik(messages),
+      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
       status: upstreamResp.status,
       statusMessage: respText.slice(0, 500),
       extraTags: ["error"],
-      observationMetadata: { stage: "upstream", stream: false },
+      observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
     });
   }
 
@@ -1231,6 +1387,10 @@ interface TapContext {
   spaceId?: string;
   /** Upstream response header `x-request-id` (empty when not returned). */
   upstreamRequestId?: string;
+  /** `config.langfuse.debug === true` 的求值结果。 */
+  langfuseDebug: boolean;
+  /** buildRequestDebugMetadata 结果；debug=false 时为 {}。 */
+  debugMetadata: Record<string, unknown>;
 }
 
 /** Accumulated tool call state during SSE streaming. */
@@ -1432,14 +1592,22 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       }
 
       // Langfuse: report this LLM call as a generation under the turn trace
+      // 流式路径 inputMessages 保持原样（其它下游流水线也用同一份引用）；
+      // debug=true 时把 tool_call 累积计数塞进 metadata 兜底。
       try {
+        const streamDebugExtra = ctx.langfuseDebug
+          ? {
+              stream_tool_call_count: toolCallAccumulators.size,
+              stream_assistant_content_len: assistantContent.length,
+            }
+          : {};
         langfuseReportGeneration({
           traceId: lf.traceId,
           name: modelId,
           model: modelId,
           startTime,
           endTime,
-          input: inputMessages,
+          input: buildLangfuseInputChat(inputMessages, ctx.langfuseDebug, flattenMessagesForOpik),
           output: outputMessage,
           usage: lastUsage,
           traceName: lf.traceName,
@@ -1448,8 +1616,14 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
           tags: lf.tags,
           traceInput: lf.userQuery || undefined,
           traceOutput: outputMessage ?? undefined,
-          traceMetadata: { stream: true, retried, upstreamUrl, ...logMeta },
-          observationMetadata: { retried, ...logMeta },
+          traceMetadata: {
+            stream: true, retried, upstreamUrl, ...logMeta,
+            ...ctx.debugMetadata, ...streamDebugExtra,
+          },
+          observationMetadata: {
+            retried, ...logMeta,
+            ...ctx.debugMetadata, ...streamDebugExtra,
+          },
         });
       } catch (langfuseErr: unknown) {
         pipe.error("LANGFUSE_SPAN", langfuseErr);

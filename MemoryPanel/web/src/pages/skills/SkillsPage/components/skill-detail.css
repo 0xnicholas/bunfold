@@ -65,13 +65,7 @@
   word-break: break-word;
 }
 
-._memory-skill-detail-markdown {
-  padding: 12px;
-  border: 1px solid var(--tea-color-border-primary-default);
-  background-color: var(--tea-color-bg-primary-default);
-  font-size: 13px;
-  color: var(--tea-color-text-primary);
-}
+/* Markdown 正文盒样式已迁移到共享组件 components/markdown-view.css（._md-view） */
 
 ._memory-skill-files-box {
   padding: 8px 12px;

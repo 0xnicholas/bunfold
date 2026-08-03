@@ -151,7 +151,7 @@ export interface LangfuseConfig {
  *     protocol: "grpc"
  *     serviceName: "core"
  *     serviceVersion: "1.0.0"
- *     tenantId: "18910#apm-log-dg3527fad4feeb6c#18597_190149___apm"
+ *     tenantId: "<APM_TENANT_ID>"
  *     metricExportInterval: 60
  *     logExportInterval: 5
  *   clickhouse:

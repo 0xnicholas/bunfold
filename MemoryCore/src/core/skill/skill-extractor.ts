@@ -19,6 +19,8 @@ import type {
   ExtractedCandidate,
 } from "./queue/types.js";
 import { metricProducer } from "../report/kafka-metric-producer.js";
+import { trace } from "../report/trace.js";
+import { obsLogger } from "../report/obs-logger.js";
 
 const TAG = "[skill-extractor]";
 
@@ -29,6 +31,8 @@ export interface ExtractorRunner {
     tools?: Record<string, unknown>;
     enableTools?: boolean;
     maxIterations?: number;
+    /** Output token 上限；不填由 runner 兜底 (标准 runner 走 llm.maxTokens)。 */
+    maxTokens?: number;
     taskId: string;
     timeoutMs?: number;
     signal?: AbortSignal;
@@ -54,6 +58,12 @@ export interface ExtractorOptions {
   headChars?: number;
   /** Transcript head-tail truncation: chars to keep from the end (default 32000). */
   tailChars?: number;
+  /**
+   * Skill review 单次 LLM 调用输出 token 上限。不填 → 由 runner 继承 llm.maxTokens。
+   * 与 llm.maxTokens 独立配置：skill review 输出（含 tool-call 参数里的 SKILL.md
+   * 全文）通常比其它 stage 大，可能需要单独调高。
+   */
+  maxTokens?: number;
   logger?: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
 }
 
@@ -85,6 +95,7 @@ export class SkillExtractor {
   private readonly maxIterations: number;
   private readonly headChars: number;
   private readonly tailChars: number;
+  private readonly maxTokens?: number;
   private readonly logger?: ExtractorOptions["logger"];
 
   constructor(opts: ExtractorOptions) {
@@ -94,6 +105,7 @@ export class SkillExtractor {
     this.maxIterations = opts.maxIterations ?? 16;
     this.headChars = opts.headChars ?? 8000;
     this.tailChars = opts.tailChars ?? 32000;
+    this.maxTokens = opts.maxTokens;
     this.logger = opts.logger;
   }
 
@@ -102,6 +114,11 @@ export class SkillExtractor {
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error("ExtractV2: messages must be a non-empty array of ExtractMessage");
     }
+    // [obs] 一次抽取一条汇总事件；LLM 内部 iteration 走 langfuse trace（trace.report
+    // → OTel Span → Langfuse SpanProcessor 过滤上报），这里只做「入口→出口」
+    // 的耗时 / 候选数量汇总，用 task_id 做 anchor 跟 worker 段对齐。obsLogger
+    // 内部 try/catch + FileLogger + 后端降级，logger 挂了也不影响抽取本身。
+    const t0 = Date.now();
     const transcript = formatTranscript(messages);
 
     const truncated = truncateHeadTail(transcript, this.headChars, this.tailChars);
@@ -123,6 +140,13 @@ export class SkillExtractor {
     if (!this.runner) {
       // No runner injected (test environment / disabled) → 返回空候选
       this.logger?.info(`${TAG} no runner provided; returning empty candidates`);
+      obsLogger.info("skill.extractor.extract", {
+        task_id: input.task_id,
+        dur_ms: Date.now() - t0,
+        msg_count: messages.length,
+        candidates: 0,
+        skipped: "no_runner",
+      });
       return { candidates: [] };
     }
 
@@ -136,27 +160,79 @@ export class SkillExtractor {
       logger: this.logger,
     });
 
-    const text = await this.runner.run({
-      prompt,
-      systemPrompt: this.systemPrompt,
-      tools,
-      enableTools: true,
-      maxIterations: input.options?.max_iterations ?? this.maxIterations,
-      taskId: `skill-extract-${input.task_id ?? "unknown"}`,
-      // Langfuse trace 语义：让此次抽取在 Langfuse UI 有稳定 name / 可筛选 tags。
-      // 详见 core/types.ts LLMRunParams 的 traceName/tags/sessionId/userId 注释。
-      traceName: "skill.extract",
-      tags: [
-        "skill-extract",
-        `team:${input.team_id}`,
-        `agent:${input.agent_id}`,
-      ],
-      sessionId: input.session_id,
-      userId: input.user_id,
-      instanceId: input.space_id,
-    });
+    let text: string;
+    try {
+      text = await this.runner.run({
+        prompt,
+        systemPrompt: this.systemPrompt,
+        tools,
+        enableTools: true,
+        maxIterations: input.options?.max_iterations ?? this.maxIterations,
+        maxTokens: this.maxTokens,
+        taskId: `skill-extract-${input.task_id ?? "unknown"}`,
+        // Langfuse trace 语义：让此次抽取在 Langfuse UI 有稳定 name / 可筛选 tags。
+        // 详见 core/types.ts LLMRunParams 的 traceName/tags/sessionId/userId 注释。
+        traceName: "skill.extract",
+        tags: [
+          "skill-extract",
+          `team:${input.team_id}`,
+          `agent:${input.agent_id}`,
+        ],
+        sessionId: input.session_id,
+        userId: input.user_id,
+        instanceId: input.space_id,
+      });
+    } catch (e) {
+      // 一条 warn 汇总失败，包含 task_id / err_name / dur —— Worker 侧再按分类
+      // (transient / permanent) 决定 requeue 还是 DLQ。这里不吞异常。
+      const dur = Date.now() - t0;
+      obsLogger.warn("skill.extractor.extract", {
+        task_id: input.task_id,
+        dur_ms: dur,
+        msg_count: messages.length,
+        candidates: auditSink.length,
+        err_name: (e as Error).name,
+        err_msg: (e as Error).message,
+      });
+      try {
+        trace.report("skill.extractor.extract", {
+          task_id: input.task_id,
+          team_id: input.team_id,
+          agent_id: input.agent_id,
+          session_id: input.session_id,
+          msg_count: messages.length,
+          candidates: auditSink.length,
+          dur_ms: dur,
+          success: false,
+          error: (e as Error).message,
+        });
+      } catch { /* noop */ }
+      throw e;
+    }
 
     try { metricProducer.send({ metric: "skill.extract.candidates", instanceId: input.team_id, value: auditSink.length }); } catch { /* noop */ }
+
+    const dur = Date.now() - t0;
+    obsLogger.info("skill.extractor.extract", {
+      task_id: input.task_id,
+      dur_ms: dur,
+      msg_count: messages.length,
+      candidates: auditSink.length,
+      prompt_chars: prompt.length,
+    });
+    try {
+      trace.report("skill.extractor.extract", {
+        task_id: input.task_id,
+        team_id: input.team_id,
+        agent_id: input.agent_id,
+        session_id: input.session_id,
+        msg_count: messages.length,
+        candidates: auditSink.length,
+        prompt_chars: prompt.length,
+        dur_ms: dur,
+        success: true,
+      });
+    } catch { /* noop */ }
 
     return { candidates: auditSink, text };
   }
@@ -199,8 +275,26 @@ export class SkillExtractor {
 //  helpers
 // ═════════════════════════════════════════════════════════════════════
 
+/**
+ * 把 ExtractMessage[] 序列化成给 Skill Review Agent 看的 transcript。
+ *
+ * 关键设计（对齐 SKILL_REVIEW_PROMPT 的 "Role isolation" 段）：
+ *   - role 前缀用非自然的 `<<past-xxx>>` 双尖括号 tag，而不是 `[user]` / `[assistant]`。
+ *     后者是 chat completion 的原生 role signal，模型会本能把 transcript 尾部的
+ *     `[assistant]` 当成"该我续写下一 turn"的锚点，直接接着写主 agent 的回复。
+ *     `<<past-user>>` 这类非典型 tag 打破这个暗示，让模型明确知道"这些是我在
+ *     review 的历史内容，不是我要扮演的角色"。
+ *   - 末尾追加 `<<end-of-transcript>>` 锚点 + 一句"现在按 system prompt 里的
+ *     output contract 决策"。没有这个锚点时，模型看到 transcript 直接结束在
+ *     一段 assistant 长回复上，很容易走"再续写一段类似风格"的路径。
+ *
+ * 相关背景：docs/2026-07-28 skill extractor role-capture 分析（trace
+ * f546ab8c-c7c5-4598-a310-6b2162372e7c，抽取 LLM 完全忽略 SKILL_REVIEW_PROMPT
+ * 契约，产出 1235 tokens 的主对话续写，零 tool call、零 "Nothing to save."）。
+ */
 function formatTranscript(messages: ExtractMessage[]): string {
-  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
+  const body = messages.map((m) => `<<past-${m.role}>>\n${m.content}`).join("\n\n");
+  return `${body}\n\n<<end-of-transcript>>\nAbove is the past conversation to review. Now decide, and respond only per the output contract in the system prompt.`;
 }
 
 function truncateHeadTail(s: string, head: number, tail: number): string {

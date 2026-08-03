@@ -3,6 +3,16 @@
  */
 
 /**
+ * 用于 `config.defaultTaskId` 兜底关联时，fetchTeamsAndAgents 在每个 team 的
+ * tasks 列表头部注入的虚拟条目 label。
+ *
+ * 通过在源头注入而不是在 form / extractor 侧加分支，让分页 total、auto-select
+ * 级联、extractor 匹配全部走既有 tasks.length 路径，避免"分页真相分散"型 bug
+ * （见 docs 里 defaultTaskId 相关记录 & 2026-07-29 issue）。
+ */
+export const DEFAULT_TASK_LABEL = "本次不关联任务";
+
+/**
  * Session-init 状态机：
  *   uninitialized           → 第一次进来，控制面拉 teams[]
  *   pending_asset_confirm   → 已发轮0 form（是否关联团队资产），等用户答
@@ -77,6 +87,12 @@ export interface SessionInitState {
 export interface TaskInTeam {
   task_id: string;
   task_name: string;
+  /**
+   * 标识该条目是 `config.defaultTaskId` 兜底注入的虚拟 task（source: proxy）
+   * 而非内核里真实存在的 task。form 侧看到该字段会跳过 `(id-suffix)` 的拼接，
+   * 显示更干净的 label —— 反正虚拟 task 只有一个，不存在重名歧义。
+   */
+  isDefault?: boolean;
 }
 
 export interface AgentInTeam {

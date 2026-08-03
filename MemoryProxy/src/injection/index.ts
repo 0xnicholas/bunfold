@@ -77,6 +77,7 @@ export { TdaiL1RecallInjector } from "./injectors/tdai-l1-recall-injector.js";
 export { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 export { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
 export { KnowledgeToolsInjector } from "./injectors/knowledge-tools-injector.js";
+export { AssetReflectionInjector, renderAssetReflectionBlock } from "./injectors/asset-reflection-injector.js";
 
 // CodeBuddy
 export { isCodeBuddyPrompt, parseCodeBuddySystemPrompt } from "./agents/codebuddy/parser.js";
@@ -100,6 +101,7 @@ import { SkillToolsInjector } from "./injectors/skill-tools-injector.js";
 import { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 import { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
 import { KnowledgeToolsInjector } from "./injectors/knowledge-tools-injector.js";
+import { AssetReflectionInjector } from "./injectors/asset-reflection-injector.js";
 import type { ProtocolAdapter } from "./adapters/interface.js";
 import type { AgentProfile } from "./agents/interface.js";
 import { CodeBuddyProfile } from "./agents/codebuddy/profile.js";
@@ -302,6 +304,34 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // proxyBaseUrl 复用 skill-tools-injector 算出来的（同一 host:port）。
     if (typeof proxyBaseUrl !== "undefined") {
       registry.register(new TdaiToolsInjector({ proxyBaseUrl }));
+    }
+  }
+
+  // ── Asset Reflection (内部效果评估) ─────────────────────────────────────
+  // 默认关闭（markerOptIn=false）—— 生产 pod 完全跳过 register，零性能开销。
+  // 开启后即使 register，只有请求 URL 带 `/analyse` marker 才真 emit 块。
+  // Tag 列表由本节点上"实际 register 了的资产 injector"派生，避免让 LLM 反思
+  // 一个本节点根本没接入的资产。
+  if (config.injection?.assetReflection?.markerOptIn) {
+    const registeredIds = new Set(registry.getAll().map((h) => h.id));
+    const activeAssetTags: string[] = [];
+    // Skill 家族：SkillInjector 出 <available_skills>，SkillToolsInjector 出 <skill_tools>；
+    // 两个 injector 一起启用（见上文 `if (injectors.includes("skill"))`），任一存在都算 skill 资产命中。
+    if (registeredIds.has("skill-injector") || registeredIds.has("skill-tools-injector")) {
+      activeAssetTags.push("skill_tools");
+      activeAssetTags.push("available_skills");
+    }
+    if (registeredIds.has("tdai-memory-tools-injector")) {
+      activeAssetTags.push("tdai_memory_tools");
+    }
+    if (registeredIds.has("knowledge-tools-injector")) {
+      activeAssetTags.push("knowledge_tools");
+    }
+    if (activeAssetTags.length > 0) {
+      registry.register(new AssetReflectionInjector({ activeAssetTags }));
+      console.log(`[injection] asset-reflection registered, tags=[${activeAssetTags.join(",")}]`);
+    } else {
+      console.log(`[injection] asset-reflection markerOptIn=true 但本节点无资产 injector，跳过 register`);
     }
   }
 

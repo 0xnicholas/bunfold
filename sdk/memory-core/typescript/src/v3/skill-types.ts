@@ -241,6 +241,10 @@ export interface SkillExtractOptions {
 }
 export interface SkillExtractRequest extends SkillIdFields {
   /**
+   * Required after merging per-call values with SkillClient constructor defaults.
+   * SkillClient validates user_id/team_id/agent_id locally before sending.
+   */
+  /**
    * Instance id. Optional at the schema layer — when omitted, the server
    * falls back to `auth.serviceId` (the `x-tdai-service-id` header). Set
    * this only when the caller intentionally targets a different instance
@@ -343,6 +347,50 @@ export interface SkillConversationArchivedInfo {
 export interface SkillConversationAddData {
   status: "ok" | "archived";
   archived?: SkillConversationArchivedInfo;
+}
+
+// ── /v3/skill/conversation/force-archive ──
+/**
+ * `POST /v3/skill/conversation/force-archive` — manually archive the
+ * current session buffer, bypassing the tool_call / bytes thresholds.
+ * The third trigger condition alongside `/conversation/add`'s automatic
+ * thresholds (see `MemoryCore/src/gateway/skill-handlers.ts` +
+ * `forceArchiveRequestSchema`).
+ *
+ * All isolation ids are REQUIRED. `space_id` follows the same
+ * convention as `/extract` / `/conversation/add`: optional at the
+ * schema layer, server falls back to `auth.serviceId`. Constructor
+ * defaults are NOT merged in — callers pass ids explicitly.
+ *
+ * `reason` (≤ 2000 chars) and `task_id` are optional; `task_id` is
+ * forwarded to `archive.task.task_ref_id` when an archive is produced.
+ */
+export interface SkillConversationForceArchiveRequest {
+  session_id: string;
+  space_id?: string;
+  user_id: string;
+  team_id: string;
+  agent_id: string;
+  reason?: string;
+  task_id?: string;
+}
+
+/**
+ * `AddForceArchiveResult` mirror — three shapes:
+ *
+ *   - `status: "empty"` — buffer had no messages, nothing to archive
+ *     (`archived` absent; the server returns a human-readable
+ *     `message` alongside).
+ *   - `status: "archived"` — archive was written; `task_id`,
+ *     `archived_at_ms`, `archive_key` are populated at the top level
+ *     (NOT nested under `archived`, unlike `conversation/add`).
+ */
+export interface SkillConversationForceArchiveData {
+  status: "empty" | "archived";
+  message?: string;
+  task_id?: string;
+  archived_at_ms?: number;
+  archive_key?: string;
 }
 
 // ── SDK-only convenience ──

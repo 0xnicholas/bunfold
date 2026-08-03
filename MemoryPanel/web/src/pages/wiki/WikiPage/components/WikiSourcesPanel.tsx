@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -164,22 +165,29 @@ const mdComponents = {
 
 // Wiki 状态徽章：draft=建壳未加工（待用户点 ingest）；pending=排队；processing=加工中；ready=就绪；failed=失败；missing=KS 数据丢失。
 // 走 Tea Tag 的语义 theme（soft 变体），随主题响应，不用硬编码调色板色。
-const WIKI_STATUS_BADGE: Record<
-  WikiDetail['status'],
-  { label: string; theme: 'warning' | 'success' | 'error' | 'default' }
-> = {
-  draft: { label: '待加工', theme: 'warning' },
-  pending: { label: '排队中', theme: 'warning' },
-  processing: { label: '加工中', theme: 'warning' },
-  ready: { label: '就绪', theme: 'success' },
-  failed: { label: '失败', theme: 'error' },
-  missing: { label: '已丢失', theme: 'error' },
+const WIKI_STATUS_THEME: Record<WikiDetail['status'], 'warning' | 'success' | 'error' | 'default'> = {
+  draft: 'warning',
+  pending: 'warning',
+  processing: 'warning',
+  ready: 'success',
+  failed: 'error',
+  missing: 'error',
+};
+const WIKI_STATUS_KEY: Record<WikiDetail['status'], string> = {
+  draft: 'wiki.status.draft',
+  pending: 'wiki.status.pending',
+  processing: 'wiki.status.processing',
+  ready: 'wiki.status.ready',
+  failed: 'wiki.status.failed',
+  missing: 'wiki.status.missing',
 };
 function WikiStatusBadge({ status }: { status: WikiDetail['status'] }) {
-  const b = WIKI_STATUS_BADGE[status] ?? { label: status, theme: 'default' as const };
+  const { t } = useTranslation();
+  const theme = WIKI_STATUS_THEME[status] ?? ('default' as const);
+  const label = WIKI_STATUS_KEY[status] ? t(WIKI_STATUS_KEY[status]) : status;
   return (
-    <Tag theme={b.theme} variant="soft" size="sm">
-      {b.label}
+    <Tag theme={theme} variant="soft" size="sm">
+      {label}
     </Tag>
   );
 }
@@ -225,11 +233,11 @@ const TYPE_COLORS: Record<string, string> = {
 const TYPE_COLOR_FALLBACK = 'var(--tea-color-text-tertiary)';
 
 type WikiScopeTab = 'all' | 'team' | 'fixed' | 'scope';
-const SCOPE_LABELS: Record<WikiScopeTab, string> = {
-  all: '全部',
-  team: '团队 Wiki 池',
-  fixed: 'Agent 资产',
-  scope: '可配置范围',
+const SCOPE_LABEL_KEYS: Record<WikiScopeTab, string> = {
+  all: 'wiki.scope.all',
+  team: 'wiki.scope.team',
+  fixed: 'wiki.scope.fixed',
+  scope: 'wiki.scope.scope',
 };
 
 /**
@@ -239,16 +247,18 @@ const SCOPE_LABELS: Record<WikiScopeTab, string> = {
  * 抽子组件是因为 Rules of Hooks —— 不能在 .map 里循环调 hook。
  */
 function WikiOwnerLabel({ userId, currentUserId }: { userId: string; currentUserId: string }) {
+  const { t } = useTranslation();
   const name = useUserDisplayName(userId);
   return (
-    <span title={`Owner: ${userId}`}>
+    <span title={t('wiki.detail.owner', { userId })}>
       @{name || userId}
-      {userId === currentUserId && <span className="ml-1 text-xs text-primary">（你）</span>}
+      {userId === currentUserId && <span className="ml-1 text-xs text-primary">{t('wiki.detail.you')}</span>}
     </span>
   );
 }
 
 export default function WikiSourcesPanel() {
+  const { t } = useTranslation();
   const [sources, setSources] = useState<WikiDetail[]>([]);
   const [loading, setLoading] = useState(false);
   const [scopeTab, setScopeTab] = useState<WikiScopeTab>('team');
@@ -306,7 +316,7 @@ export default function WikiSourcesPanel() {
       const items = await knowledgeApi.wiki.agentFixed(agentFilter);
       setFixedBoundIds(new Set(items.map((it) => it.knowledge_id)));
     } catch (e: any) {
-      tea.notify.error(e?.message || '加载固定资产失败');
+      tea.notify.error(e?.message || t('wiki.notify.loadFixedFailed'));
       setFixedBoundIds(new Set());
     }
   }, [agentFilter]);
@@ -480,7 +490,7 @@ export default function WikiSourcesPanel() {
     } finally {
       setGraphLoading(false);
     }
-    if (hadError) tea.notify.error('加载 Wiki 详情失败，部分内容可能不完整');
+    if (hadError) tea.notify.error(t('wiki.notify.loadDetailFailed'));
   }, []);
 
   const runningWikiKey = useMemo(
@@ -529,19 +539,19 @@ export default function WikiSourcesPanel() {
   async function handleUnbindWiki(wikiId: string) {
     if (!agentFilter) return;
     const ok = await tea.confirm({
-      message: '确认解绑该 Wiki？',
-      description: '将从当前 agent 移除该 Wiki 绑定。',
-      okText: '解绑',
+      message: t('wiki.confirm.unbind'),
+      description: t('wiki.confirm.unbind.desc'),
+      okText: t('wiki.confirm.unbind.ok'),
     });
     if (!ok) return;
     try {
       await knowledgeApi.wiki.unbind(wikiId, agentFilter);
-      tea.notify.success('已解绑');
+      tea.notify.success(t('wiki.notify.unbound'));
       if (selectedWikiId === wikiId) setSelectedWikiId('');
       await fetchFixedBindings();
       await fetchSources();
     } catch (e: any) {
-      tea.notify.error(e?.message || '解绑失败');
+      tea.notify.error(e?.message || t('wiki.notify.unbindFailed'));
     }
   }
 
@@ -551,7 +561,7 @@ export default function WikiSourcesPanel() {
     setSubmitting(true);
     try {
       await knowledgeApi.wiki.create(activeTeamId, newName.trim());
-      tea.notify.success(`Wiki「${newName.trim()}」已创建`);
+      tea.notify.success(t('wiki.notify.created', { name: newName.trim() }));
       setShowCreate(false);
       setNewName('');
       fetchSources();
@@ -566,7 +576,7 @@ export default function WikiSourcesPanel() {
     // 防御：同一时间只允许一个 Wiki 提取，避免并发 ingest 导致后端排队混乱。
     // 按钮已按 ingestBusy 禁用，这里再挡一层防止绕过。
     if (ingestBusy) {
-      tea.notify.warning('已有 Wiki 正在提取，请等待当前任务完成后再试。');
+      tea.notify.warning(t('wiki.ingest.warning'));
       return;
     }
     const wiki = sources.find((s) => s.wiki_id === wikiId);
@@ -576,7 +586,7 @@ export default function WikiSourcesPanel() {
       wikiId,
       wiki: name,
       currentFile: '',
-      detail: '正在触发抽取...',
+      detail: t('wiki.ingest.triggering'),
       done: 0,
       total: 100,
       checkCount: 0,
@@ -592,14 +602,14 @@ export default function WikiSourcesPanel() {
             const checkedAt = new Date(ev.ts).toLocaleTimeString();
             if (ev.type === 'file_start') {
               next.currentFile = ev.file || '';
-              next.detail = ev.detail || '处理中...';
+              next.detail = ev.detail || t('wiki.ingest.processing');
               next.done = ev.done ?? prev.done;
               next.total = ev.total ?? prev.total;
               next.lastCheckedAt = checkedAt;
             } else if (ev.type === 'file_done') {
               next.done = ev.done ?? prev.done;
               next.total = ev.total ?? prev.total;
-              next.detail = ev.detail || `已检查 ${next.done}/${next.total}`;
+              next.detail = ev.detail || t('wiki.ingest.checked', { done: next.done, total: next.total });
               next.checkCount = prev.checkCount + 1;
               next.lastCheckedAt = checkedAt;
               if (ev.file) next.log = [...prev.log, { file: ev.file, status: 'done' }];
@@ -612,7 +622,7 @@ export default function WikiSourcesPanel() {
             } else if (ev.type === 'batch_done') {
               next.done = ev.done ?? 100;
               next.total = ev.total ?? 100;
-              next.detail = ev.detail || '抽取完成';
+              next.detail = ev.detail || t('wiki.ingest.complete');
               next.lastCheckedAt = checkedAt;
             }
             return next;
@@ -624,30 +634,30 @@ export default function WikiSourcesPanel() {
             active: false,
             done: 100,
             total: 100,
-            detail: `完成！当前 ${result.ingested} 页`,
+            detail: t('wiki.ingest.done', { count: result.ingested }),
             currentFile: '',
           }));
-          tea.notify.success(`Wiki 抽取完成，共 ${result.ingested} 页`);
+          tea.notify.success(t('wiki.notify.ingestComplete', { count: result.ingested }));
           fetchSources();
           fetchDetail(wikiId);
         },
         onError: (err) => {
-          setIngestState((prev) => ({ ...prev, active: false, detail: `错误: ${err}` }));
-          tea.notify.error(err || 'Wiki 抽取失败');
+          setIngestState((prev) => ({ ...prev, active: false, detail: t('wiki.ingest.error', { error: err }) }));
+          tea.notify.error(err || t('wiki.notify.ingestFailed'));
         },
       },
       activeTeamId ?? '',
     );
     setIngestState((prev) =>
       prev.active
-        ? { ...prev, active: false, detail: prev.log.length > 0 ? '完成' : prev.detail }
+        ? { ...prev, active: false, detail: prev.log.length > 0 ? t('wiki.ingest.finished') : prev.detail }
         : prev,
     );
     fetchSources();
   };
 
   const handleDelete = async (wikiId: string, name: string) => {
-    const ok = await tea.confirm({ message: `确定要删除 Wiki「${name}」吗？`, okText: '删除' });
+    const ok = await tea.confirm({ message: t('wiki.confirm.delete', { name }), okText: t('common.delete') });
     if (!ok) return;
     try {
       await knowledgeApi.wiki.delete(wikiId);
@@ -689,7 +699,7 @@ export default function WikiSourcesPanel() {
       setReadContent(r?.content || '');
     } catch (e: any) {
       setReadContent('');
-      tea.notify.error(e?.message || '读取页面内容失败');
+      tea.notify.error(e?.message || t('wiki.notify.readPageFailed'));
     } finally {
       setReadLoading(false);
     }
@@ -699,42 +709,42 @@ export default function WikiSourcesPanel() {
     if (!selectedWikiId) return;
     const ref = (page as any).id || page.path;
     const ok = await tea.confirm({
-      message: `确认删除页面「${page.title || ref}」？`,
-      description: '会删除该 wiki 页面并清理引用。',
-      okText: '删除',
+      message: t('wiki.confirm.deletePage', { name: page.title || ref }),
+      description: t('wiki.confirm.deletePage.desc'),
+      okText: t('common.delete'),
     });
     if (!ok) return;
     try {
       await knowledgeApi.wiki.pageDelete(selectedWikiId, [ref]);
-      tea.notify.success('已删除页面');
+      tea.notify.success(t('wiki.notify.pageDeleted'));
       if (selectedPage && ((selectedPage as any).id || selectedPage.path) === ref) {
         setSelectedPage(null);
         setReadContent('');
       }
       await fetchDetail(selectedWikiId);
     } catch (e: any) {
-      tea.notify.error(e?.message || '删除页面失败');
+      tea.notify.error(e?.message || t('wiki.notify.pageDeleteFailed'));
     }
   };
 
   const handleDeleteRaw = async (filename: string) => {
     if (!selectedWikiId) return;
     const ok = await tea.confirm({
-      message: `确认删除原始文档「${filename}」？`,
-      description: '会删除原始文档，并同步清理由它派生的页面。',
-      okText: '删除',
+      message: t('wiki.confirm.deleteRaw', { name: filename }),
+      description: t('wiki.confirm.deleteRaw.desc'),
+      okText: t('common.delete'),
     });
     if (!ok) return;
     try {
       await knowledgeApi.wiki.rawDelete(selectedWikiId, [filename]);
-      tea.notify.success('已删除原始文档');
+      tea.notify.success(t('wiki.notify.rawDeleted'));
       if (selectedPage?.path === `raw/${filename}`) {
         setSelectedPage(null);
         setReadContent('');
       }
       await fetchDetail(selectedWikiId);
     } catch (e: any) {
-      tea.notify.error(e?.message || '删除原始文档失败');
+      tea.notify.error(e?.message || t('wiki.notify.rawDeleteFailed'));
     }
   };
 
@@ -761,32 +771,32 @@ export default function WikiSourcesPanel() {
       if (existing.length === 0) return true;
 
       return tea.confirm({
-        message: `检测到 ${existing.length} 个同名文件`,
-        description: `继续上传将覆盖原有内容：${formatOverwriteFilenames(existing)}`,
-        okText: '覆盖并上传',
-        cancelText: '取消',
+        message: t('wiki.detail.overwrite.title', { count: existing.length }),
+        description: t('wiki.detail.overwrite.desc', { files: formatOverwriteFilenames(existing) }),
+        okText: t('wiki.detail.overwrite.ok'),
+        cancelText: t('common.cancel'),
       });
     } catch (e: unknown) {
-      tea.notify.error(e instanceof Error ? e : '获取已有文档失败，已取消上传');
+      tea.notify.error(e instanceof Error ? e : t('wiki.notify.uploadCancelled'));
       return false;
     }
   };
 
   /**
    * 上传只写入原始文档，不会自动触发知识抽取；成功后立即给出明确的下一步操作，
-   * 避免用户不知道还需要点击“开始抽取”。
+   * 避免用户不知道还需要点击"开始抽取"。
    */
   const offerIngestAfterUpload = async (wikiId: string, uploadedCount: number) => {
     const shouldIngest = await tea.confirm({
-      message: `${uploadedCount} 个文档已上传`,
-      description: '文档尚未抽取为可检索页面。现在开始抽取后，才能在页面、图谱和搜索中使用这些内容。',
-      okText: '开始抽取',
-      cancelText: '稍后处理',
+      message: t('wiki.detail.uploaded', { count: uploadedCount }),
+      description: t('wiki.detail.uploaded.desc'),
+      okText: t('wiki.detail.uploaded.ok'),
+      cancelText: t('wiki.detail.uploaded.cancel'),
     });
     if (shouldIngest) {
       void handleIngest(wikiId);
     } else {
-      tea.notify.info('文档已保存。需要时可点击 Wiki 详情页右上角的“开始抽取”。');
+      tea.notify.info(t('wiki.detail.uploaded.later'));
     }
   };
 
@@ -814,7 +824,7 @@ export default function WikiSourcesPanel() {
     uploadInFlightRef.current = false;
     setSubmitting(false);
     if (failures.length === 0) {
-      tea.notify.success(`已上传 ${valid.length} 个文档`);
+      tea.notify.success(t('wiki.detail.upload.success', { count: valid.length }));
       setMdDocs([{ filename: '', content: '' }]);
       setShowAddDoc(false);
       fetchDetail(selectedWikiId);
@@ -827,8 +837,8 @@ export default function WikiSourcesPanel() {
         .slice(0, 3)
         .map((f) => `${f.filename}: ${f.error}`)
         .join('\n');
-      const more = failures.length > 3 ? `\n…及其它 ${failures.length - 3} 个` : '';
-      tea.notify.error(`${okCount} 个成功，${failures.length} 个失败：\n${shown}${more}`);
+      const more = failures.length > 3 ? t('wiki.detail.upload.more', { count: failures.length - 3 }) : '';
+      tea.notify.error(t('wiki.detail.upload.partialFail', { ok: okCount, fail: failures.length, detail: `${shown}${more}` }));
       fetchDetail(selectedWikiId);
       setRawRefreshKey((k) => k + 1);
       if (okCount > 0) await offerIngestAfterUpload(selectedWikiId, okCount);
@@ -868,7 +878,7 @@ export default function WikiSourcesPanel() {
     const failed = results.filter((r) => r.status === 'rejected').length;
     const succeeded = results.length - failed;
     if (failed === 0) {
-      tea.notify.success(`已上传 ${succeeded} 个文件`);
+      tea.notify.success(t('wiki.detail.upload.successFiles', { count: succeeded }));
       setPendingFiles([]);
       setUploadProgress({});
       setShowAddDoc(false);
@@ -881,7 +891,7 @@ export default function WikiSourcesPanel() {
         if (r.status === 'rejected')
           setUploadProgress((prev) => ({ ...prev, [pendingFiles[i].name]: 'error' }));
       });
-      tea.notify.error(`${succeeded} 个成功，${failed} 个失败`);
+      tea.notify.error(t('wiki.detail.upload.fail', { ok: succeeded, fail: failed }));
       fetchDetail(selectedWikiId);
       setRawRefreshKey((k) => k + 1);
       if (succeeded > 0) await offerIngestAfterUpload(selectedWikiId, succeeded);
@@ -925,13 +935,13 @@ export default function WikiSourcesPanel() {
     if (hasManualIngestState || !runningWiki) return ingestState;
     const stage = wikiStageLabel(runningWiki.status, runningWiki.internal_status);
     const pageHint =
-      typeof runningWiki.page_count === 'number' ? `，当前 ${runningWiki.page_count} 页` : '';
+      typeof runningWiki.page_count === 'number' ? t('wiki.ingest.currentPage', { count: runningWiki.page_count }) : '';
     return {
       active: true,
       wikiId: runningWiki.wiki_id ?? '',
       wiki: runningWiki.name,
       currentFile: '',
-      detail: `状态恢复：${stage}${pageHint}`,
+      detail: t('wiki.ingest.stateRecovery', { stage, pageHint }),
       done: wikiProgressPercent(runningWiki.status, runningWiki.internal_status),
       total: 100,
       checkCount: 0,
@@ -999,7 +1009,7 @@ export default function WikiSourcesPanel() {
           <Card.Body className="_wiki-detail-header-body">
             <div className="_wiki-detail-breadcrumb">
               <Button type="text" onClick={() => { fetchSources(); setSubView('list'); }}>
-                <ArrowLeftIcon size={12} /> Wiki 知识库
+                <ArrowLeftIcon size={12} /> {t('wiki.breadcrumb')}
               </Button>
               <span>/</span>
               <span>{wikiName}</span>
@@ -1009,7 +1019,7 @@ export default function WikiSourcesPanel() {
                 <BooksIcon size={18} />
                 <span className="_wiki-detail-title">{wikiName}</span>
                 {source && <WikiStatusBadge status={source.status} />}
-                <Text theme="label">{pages.length} 页</Text>
+                <Text theme="label">{t('wiki.detail.pages', { count: pages.length })}</Text>
               </div>
               <div className="_wiki-detail-header-actions">
                 <Button
@@ -1019,7 +1029,7 @@ export default function WikiSourcesPanel() {
                     setAddDocTab('file');
                   }}
                 >
-                  <AttachIcon size={14} /> 添加
+                  <AttachIcon size={14} /> {t('wiki.detail.add')}
                 </Button>
                 <Button
                   type="primary"
@@ -1028,7 +1038,7 @@ export default function WikiSourcesPanel() {
                   loading={ingestBusy && displayIngestState.wiki === wikiName}
                 >
                   {ingestBusy && displayIngestState.wiki === wikiName ? (
-                    '处理中'
+                    t('wiki.detail.processing')
                   ) : (
                     <>
                       <StarIcon size={14} /> Ingest
@@ -1052,14 +1062,14 @@ export default function WikiSourcesPanel() {
                       ) : (
                         <CheckCircleIcon size={14} />
                       )}{' '}
-                      Ingest：{displayIngestState.wiki}
+                      {t('wiki.detail.ingestTitle', { name: displayIngestState.wiki })}
                     </Text>
                     {!displayIngestState.active && (
                       <Button
                         type="text"
                         onClick={() => setIngestState((state) => ({ ...state, log: [] }))}
                       >
-                        清除
+                        {t('wiki.detail.clear')}
                       </Button>
                     )}
                   </div>
@@ -1078,9 +1088,9 @@ export default function WikiSourcesPanel() {
                       </div>
                       {displayIngestState.checkCount > 0 && (
                         <Text theme="label">
-                          已实际查询 {displayIngestState.checkCount} 次
+                          {t('wiki.detail.queryCount', { count: displayIngestState.checkCount })}
                           {displayIngestState.lastCheckedAt
-                            ? `，最近 ${displayIngestState.lastCheckedAt}`
+                            ? t('wiki.detail.lastQuery', { time: displayIngestState.lastCheckedAt })
                             : ''}
                         </Text>
                       )}
@@ -1124,7 +1134,7 @@ export default function WikiSourcesPanel() {
               label: (
                 <span className="_wiki-detail-tab-label">
                   <ChartBarIcon size={14} />
-                  概览
+                  {t('wiki.detail.tab.overview')}
                 </span>
               ),
             },
@@ -1133,7 +1143,7 @@ export default function WikiSourcesPanel() {
               label: (
                 <span className="_wiki-detail-tab-label">
                   <ArchitectureIcon size={14} />
-                  图谱
+                  {t('wiki.detail.tab.graph')}
                 </span>
               ),
             },
@@ -1142,7 +1152,7 @@ export default function WikiSourcesPanel() {
               label: (
                 <span className="_wiki-detail-tab-label">
                   <FileIcon size={14} />
-                  页面
+                  {t('wiki.detail.tab.pages')}
                 </span>
               ),
             },
@@ -1151,7 +1161,7 @@ export default function WikiSourcesPanel() {
               label: (
                 <span className="_wiki-detail-tab-label">
                   <SearchIcon size={14} />
-                  搜索
+                  {t('wiki.detail.tab.search')}
                 </span>
               ),
             },
@@ -1160,14 +1170,14 @@ export default function WikiSourcesPanel() {
           <TabPanel id="overview">
             <div className="_wiki-detail-overview">
               <div className="_wiki-detail-overview-stats">
-                <MetricsBoard title="总页面数" value={pages.length} />
-                <MetricsBoard title="页面类型" value={types.length} />
-                <MetricsBoard title="页面间链接" value={edgeCount} />
+                <MetricsBoard title={t('wiki.detail.overview.totalPages')} value={pages.length} />
+                <MetricsBoard title={t('wiki.detail.overview.pageTypes')} value={types.length} />
+                <MetricsBoard title={t('wiki.detail.overview.edges')} value={edgeCount} />
               </div>
               <Card bordered>
-                <Card.Body title="类型分布">
+                <Card.Body title={t('wiki.detail.overview.typeDist')}>
                   {types.length === 0 ? (
-                    <StatusTip status="empty" emptyText="暂无页面数据" />
+                    <StatusTip status="empty" emptyText={t('wiki.detail.overview.emptyPages')} />
                   ) : (
                     <div className="_wiki-detail-type-dist">
                       {types.map((type) => {
@@ -1192,7 +1202,7 @@ export default function WikiSourcesPanel() {
                               />
                             </span>
                             <Text theme="label" className="_wiki-detail-type-count">
-                              {count}（{pct}%）
+                              {t('wiki.detail.typePct', { count, pct })}
                             </Text>
                           </div>
                         );
@@ -1202,9 +1212,9 @@ export default function WikiSourcesPanel() {
                 </Card.Body>
               </Card>
               <Card bordered>
-                <Card.Body title="页面一览">
+                <Card.Body title={t('wiki.detail.overview.pageList')}>
                   {pages.length === 0 ? (
-                    <StatusTip status="empty" emptyText="暂无页面" />
+                    <StatusTip status="empty" emptyText={t('wiki.detail.overview.emptyPageList')} />
                   ) : (
                     <div className="_wiki-detail-overview-grid">
                       {pages.slice(0, 9).map((page) => (
@@ -1278,7 +1288,7 @@ export default function WikiSourcesPanel() {
                   .then((result: any) => setReadContent(result?.items?.[0]?.content || ''))
                   .catch((error: any) => {
                     setReadContent('');
-                    tea.notify.error(error?.message || '读取原始文档失败');
+                    tea.notify.error(error?.message || t('wiki.notify.readRawFailed'));
                   })
                   .finally(() => setReadLoading(false));
               }}
@@ -1290,12 +1300,12 @@ export default function WikiSourcesPanel() {
                 value={searchQuery}
                 onChange={setSearchQuery}
                 onSearch={handleSearch}
-                placeholder="搜索文档内容…"
+                placeholder={t('wiki.detail.search.placeholder')}
               />
               {searching && <StatusTip status="loading" />}
               {!searching && searchResults.length > 0 && (
                 <>
-                  <Text theme="label">{searchResults.length} 条结果</Text>
+                  <Text theme="label">{t('wiki.detail.search.results', { count: searchResults.length })}</Text>
                   <div className="_wiki-detail-search-results">
                     {searchResults.map((result, index) => (
                       <button
@@ -1336,7 +1346,7 @@ export default function WikiSourcesPanel() {
                 </>
               )}
               {!searching && searchResults.length === 0 && searchQuery && (
-                <StatusTip status="empty" emptyText="未找到匹配结果" />
+                <StatusTip status="empty" emptyText={t('wiki.detail.search.empty')} />
               )}
             </div>
           </TabPanel>
@@ -1346,17 +1356,17 @@ export default function WikiSourcesPanel() {
         {showAddDoc && (
           <Modal
             visible
-            caption={`添加文档到 ${wikiName}`}
+            caption={t('wiki.detail.addDoc.caption', { name: wikiName })}
             size="m"
             onClose={() => setShowAddDoc(false)}
             disableEscape={submitting}
           >
             <Modal.Body>
-              <Alert type="info">选择方式导入文档</Alert>
+              <Alert type="info">{t('wiki.detail.addDoc.hint')}</Alert>
               <Tabs
                 tabs={[
-                  { id: 'file', label: '上传文件' },
-                  { id: 'markdown', label: 'Markdown' },
+                  { id: 'file', label: t('wiki.detail.addDoc.file') },
+                  { id: 'markdown', label: t('wiki.detail.addDoc.markdown') },
                 ]}
                 activeId={addDocTab}
                 onActive={(tab) => setAddDocTab(tab.id as typeof addDocTab)}
@@ -1374,13 +1384,13 @@ export default function WikiSourcesPanel() {
                         const rejected = all.length - allowed.length;
                         if (rejected > 0) {
                           tea.notify.warning(
-                            `已忽略 ${rejected} 个非 Markdown 文件（仅支持 .md/.txt/.markdown）`,
+                            t('wiki.detail.ignored', { count: rejected }),
                           );
                         }
                         if (allowed.length > 0) setPendingFiles((prev) => [...prev, ...allowed]);
                       }}
                     >
-                      <Text theme="weak">拖拽或点击选择 Markdown 文件（可多选）</Text>
+                      <Text theme="weak">{t('wiki.detail.dropzone')}</Text>
                     </div>
                     {pendingFiles.length > 0 && (
                       <div className="_wiki-detail-upload-files">
@@ -1410,7 +1420,7 @@ export default function WikiSourcesPanel() {
                                   setPendingFiles((prev) => prev.filter((_, j) => j !== i))
                                 }
                               >
-                                删除
+                                {t('common.delete')}
                               </Button>
                             )}
                           </div>
@@ -1419,14 +1429,14 @@ export default function WikiSourcesPanel() {
                     )}
                     {pendingFiles.length > 0 && (
                       <div className="_wiki-detail-upload-footer">
-                        <Text theme="weak">{pendingFiles.length} 个文件待上传</Text>
+                        <Text theme="weak">{t('wiki.detail.upload.footer', { count: pendingFiles.length })}</Text>
                         <Button
                           type="primary"
                           onClick={handleBatchUpload}
                           disabled={submitting}
                           loading={submitting}
                         >
-                          {submitting ? '上传中…' : '确认上传'}
+                          {submitting ? t('wiki.detail.upload.submitting') : t('wiki.detail.upload.confirm')}
                         </Button>
                       </div>
                     )}
@@ -1453,7 +1463,7 @@ export default function WikiSourcesPanel() {
                               type="text"
                               onClick={() => setMdDocs((prev) => prev.filter((_, j) => j !== i))}
                             >
-                              删除
+                              {t('common.delete')}
                             </Button>
                           )}
                         </div>
@@ -1466,19 +1476,18 @@ export default function WikiSourcesPanel() {
                               prev.map((d, j) => (j === i ? { ...d, content: v } : d)),
                             )
                           }
-                          placeholder="# 标题"
+                          placeholder={t('wiki.detail.md.placeholder')}
                         />
                       </div>
                     ))}
                     <Button
                       onClick={() => setMdDocs((prev) => [...prev, { filename: '', content: '' }])}
                     >
-                      + 添加一条
+                      {t('wiki.detail.md.add')}
                     </Button>
                     <div className="_wiki-detail-upload-footer">
                       <Text theme="weak">
-                        {mdDocs.filter((d) => d.filename.trim() && d.content.trim()).length}{' '}
-                        个待上传
+                        {t('wiki.detail.md.pending', { count: mdDocs.filter((d) => d.filename.trim() && d.content.trim()).length })}
                       </Text>
                       <Button
                         type="primary"
@@ -1488,7 +1497,7 @@ export default function WikiSourcesPanel() {
                         }
                         loading={submitting}
                       >
-                        {submitting ? '上传中…' : '确认上传'}
+                        {submitting ? t('wiki.detail.upload.submitting') : t('wiki.detail.upload.confirm')}
                       </Button>
                     </div>
                   </div>
@@ -1508,7 +1517,7 @@ export default function WikiSourcesPanel() {
                   const rejected = all.length - allowed.length;
                   if (rejected > 0) {
                     tea.notify.warning(
-                      `已忽略 ${rejected} 个非 Markdown 文件（仅支持 .md/.txt/.markdown）`,
+                      t('wiki.detail.ignored', { count: rejected }),
                     );
                   }
                   if (allowed.length > 0) setPendingFiles((prev) => [...prev, ...allowed]);
@@ -1528,12 +1537,12 @@ export default function WikiSourcesPanel() {
   return (
     <div className="_asset-wiki-page">
       <AssetPageHeader
-        title="Wiki 知识库"
+        title={t('wiki.title')}
         subtitle={
           <Text theme="label">
             {activeTeam
-              ? `${activeTeam.name} · 共 ${stats.total} 个知识库`
-              : `共 ${stats.total} 个知识库`}
+              ? t('wiki.subtitle.team', { name: activeTeam.name, count: stats.total })
+              : t('wiki.subtitle.global', { count: stats.total })}
           </Text>
         }
         scope={
@@ -1542,7 +1551,7 @@ export default function WikiSourcesPanel() {
             onChange={(value) => setScopeTab(value as WikiScopeTab)}
             options={(['team', 'fixed'] as WikiScopeTab[]).map((tab) => ({
               value: tab,
-              text: SCOPE_LABELS[tab],
+              text: t(SCOPE_LABEL_KEYS[tab]),
             }))}
           />
         }
@@ -1554,7 +1563,7 @@ export default function WikiSourcesPanel() {
               value={agentFilter}
               onChange={setAgentFilter}
               disabled={teamAgents.length === 0}
-              placeholder="无可选 Agent"
+              placeholder={t('wiki.noAgentPlaceholder')}
               options={teamAgents.map((agent) => ({
                 value: agent.id,
                 text: `${agent.name}（${agent.id}）`,
@@ -1567,16 +1576,16 @@ export default function WikiSourcesPanel() {
       <Card className="_asset-wiki-content-card">
         <Card.Body>
           <div className="_asset-wiki-stats">
-            <MetricsBoard title="知识库总数" value={stats.total} />
-            <MetricsBoard title="已就绪" value={stats.ready} />
-            <MetricsBoard title="处理中" value={stats.processing} />
-            <MetricsBoard title="总页面数" value={stats.totalPages} />
+            <MetricsBoard title={t('wiki.metrics.total')} value={stats.total} />
+            <MetricsBoard title={t('wiki.metrics.ready')} value={stats.ready} />
+            <MetricsBoard title={t('wiki.metrics.processing')} value={stats.processing} />
+            <MetricsBoard title={t('wiki.metrics.totalPages')} value={stats.totalPages} />
           </div>
           <Table.ActionPanel>
             <Justify
               left={
                 <Button type="primary" onClick={() => setShowCreate(true)}>
-                  + 新建 Wiki
+                  {t('wiki.create')}
                 </Button>
               }
               right={
@@ -1584,15 +1593,15 @@ export default function WikiSourcesPanel() {
                   <SearchBox
                     value={keyword}
                     onChange={setKeyword}
-                    placeholder="搜索名称 / ID"
+                    placeholder={t('wiki.searchPlaceholder')}
                   />
                   <Segment
                     value={statusFilter}
                     onChange={(value) => setStatusFilter(value as StatusFilter)}
                     options={[
-                      { value: 'all', text: '全部状态' },
-                      { value: 'ready', text: '就绪' },
-                      { value: 'processing', text: '处理中' },
+                      { value: 'all', text: t('wiki.filter.allStatus') },
+                      { value: 'ready', text: t('wiki.filter.ready') },
+                      { value: 'processing', text: t('wiki.filter.processing') },
                     ]}
                   />
                   <Segment
@@ -1616,13 +1625,13 @@ export default function WikiSourcesPanel() {
               emptyText={
                 <div className="_asset-wiki-empty">
                   <BooksIcon size="large" />
-                  <Text>暂无 Wiki 知识库</Text>
-                  <Text theme="label">点击上方“+ 新建 Wiki”创建第一个</Text>
+                  <Text>{t('wiki.empty.title')}</Text>
+                  <Text theme="label">{t('wiki.empty.desc')}</Text>
                 </div>
               }
             />
           ) : filteredSources.length === 0 ? (
-            <StatusTip status="empty" emptyText="没有匹配的 Wiki，试试调整搜索或筛选条件。" />
+            <StatusTip status="empty" emptyText={t('wiki.empty.filtered')} />
           ) : viewMode === 'card' ? (
             <div className="_asset-wiki-grid">
               {filteredSources.map((source) => (
@@ -1641,20 +1650,20 @@ export default function WikiSourcesPanel() {
                   <div className="_asset-wiki-card-meta">
                     <WikiStatusBadge status={source.status} />
                     <span>
-                      {source.page_count ?? 0} 页 · {formatShortTime(source.last_sync_at)}
+                      {t('wiki.card.pagesAndTime', { pages: source.page_count ?? 0, time: formatShortTime(source.last_sync_at) })}
                     </span>
                   </div>
                   <div className="_asset-wiki-card-owner">
                     <UsergroupIcon size={12} />
                     {scopeTab === 'fixed' ? (
-                      `固定资产 · ${agentFilter || '未选择 Agent'}`
+                      t('wiki.fixedAsset', { agent: agentFilter || t('wiki.noAgent') })
                     ) : source.owner_user_id ? (
                       <WikiOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
                     ) : (
-                      '团队 Wiki 池'
+                      t('wiki.teamPool')
                     )}
                   </div>
-                  <div className="_asset-wiki-card-id">ID：{source.wiki_id}</div>
+                  <div className="_asset-wiki-card-id">{t('wiki.card.id', { id: source.wiki_id })}</div>
                   <WikiActions
                     source={source}
                     scopeTab={scopeTab}
@@ -1676,7 +1685,7 @@ export default function WikiSourcesPanel() {
               columns={[
                 {
                   key: 'name',
-                  header: '名称',
+                  header: t('wiki.table.name'),
                   width: 240,
                   render: (source) => (
                     <button
@@ -1692,35 +1701,35 @@ export default function WikiSourcesPanel() {
                 },
                 {
                   key: 'status',
-                  header: '状态',
+                  header: t('wiki.table.status'),
                   width: 100,
                   render: (source) => <WikiStatusBadge status={source.status} />,
                 },
                 {
                   key: 'page_count',
-                  header: '页数',
+                  header: t('wiki.table.pageCount'),
                   width: 80,
                   render: (source) => source.page_count ?? 0,
                 },
                 {
                   key: 'owner',
-                  header: '归属',
+                  header: t('wiki.table.owner'),
                   width: 180,
                   render: (source) =>
                     scopeTab === 'fixed' ? (
                       <span className="_asset-wiki-inline-icon">
                         <UsergroupIcon size={12} />
-                        {agentFilter || '未选择 Agent'}
+                        {agentFilter || t('wiki.noAgent')}
                       </span>
                     ) : source.owner_user_id ? (
                       <WikiOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
                     ) : (
-                      <Text theme="label">团队池</Text>
+                      <Text theme="label">{t('wiki.teamPool.short')}</Text>
                     ),
                 },
                 {
                   key: 'last_sync_at',
-                  header: '最后更新时间',
+                  header: t('wiki.table.lastSync'),
                   width: 140,
                   render: (source) => (
                     <Text theme="label">{formatShortTime(source.last_sync_at)}</Text>
@@ -1734,7 +1743,7 @@ export default function WikiSourcesPanel() {
                 },
                 {
                   key: 'actions',
-                  header: '操作',
+                  header: t('wiki.table.actions'),
                   width: 240,
                   fixed: 'right',
                   render: (source) => (
@@ -1760,19 +1769,19 @@ export default function WikiSourcesPanel() {
       {showCreate && (
         <Modal
           visible
-          caption="新建 Wiki"
+          caption={t('wiki.create.caption')}
           size="s"
           onClose={() => setShowCreate(false)}
           disableEscape={submitting}
         >
           <Modal.Body>
             <Form>
-              <Form.Item label="名称" required extra="创建一个新的文档知识库">
+              <Form.Item label={t('wiki.create.name')} required extra={t('wiki.create.extra')}>
                 <Input
                   size="full"
                   value={newName}
                   onChange={setNewName}
-                  placeholder="如 team-docs"
+                  placeholder={t('wiki.create.placeholder')}
                 />
               </Form.Item>
             </Form>
@@ -1784,10 +1793,10 @@ export default function WikiSourcesPanel() {
               disabled={submitting || !newName.trim()}
               loading={submitting}
             >
-              {submitting ? '创建中…' : '创建'}
+              {submitting ? t('wiki.create.submitting') : t('wiki.create.submit')}
             </Button>
             <Button onClick={() => setShowCreate(false)} disabled={submitting}>
-              取消
+              {t('common.cancel')}
             </Button>
           </Modal.Footer>
         </Modal>
@@ -1802,9 +1811,9 @@ export default function WikiSourcesPanel() {
           team={activeTeam ? { team_id: activeTeam.team_id, name: activeTeam.name } : null}
           onClose={() => setAllocateTarget(null)}
           onAllocate={async (agentId) => {
-            if (!activeTeamId) throw new Error('请先选择 team');
+            if (!activeTeamId) throw new Error(t('wiki.error.selectTeam'));
             await knowledgeApi.wiki.allocate(activeTeamId, allocateTarget.wiki_id, agentId);
-            tea.notify.success('已分配到 Agent');
+            tea.notify.success(t('wiki.notify.allocated'));
             await fetchSources();
             if (scopeTab === 'fixed') await fetchFixedBindings();
           }}
@@ -1834,14 +1843,15 @@ function WikiActions({
   onUnbind: (wikiId: string) => void;
   onDelete: (wikiId: string, name: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="_asset-wiki-actions" onClick={(event) => event.stopPropagation()}>
       <Button type="weak" disabled={ingestBusy} onClick={() => onIngest(source.wiki_id)}>
-        <StarIcon size={14} /> {isCurrentIngesting ? 'Ingest 中…' : ingestBusy ? '排队中…' : 'Ingest'}
+        <StarIcon size={14} /> {isCurrentIngesting ? t('wiki.action.ingestBusy') : ingestBusy ? t('wiki.action.queuing') : t('wiki.action.ingest')}
       </Button>
       {scopeTab === 'fixed' ? (
         <Button type="weak" onClick={() => onUnbind(source.wiki_id)}>
-          解绑
+          {t('wiki.action.unbind')}
         </Button>
       ) : (
         <Button
@@ -1850,16 +1860,16 @@ function WikiActions({
           tooltip={
             source.status === 'ready'
               ? undefined
-              : '该 Wiki 尚未加工完成（未 ready），暂不能分配到 Agent'
+              : t('wiki.action.allocate.disabled')
           }
           onClick={() => onAllocate({ wiki_id: source.wiki_id, name: source.name })}
         >
-          分配
+          {t('wiki.action.allocate')}
         </Button>
       )}
       <Button
         type="icon"
-        tooltip="删除"
+        tooltip={t('wiki.action.delete')}
         onClick={() => onDelete(source.wiki_id, source.name)}
       >
         <DeleteIcon size={14} />
@@ -1897,6 +1907,7 @@ function GraphTabContent({
   onNodeClick: (node: GraphNode) => void;
   onClearSelection: () => void;
 }) {
+  const { t } = useTranslation();
   const { width: rightW, onMouseDown } = useResizable(320, 200, 500, 'right');
 
   return (
@@ -1951,7 +1962,7 @@ function GraphTabContent({
         ) : (
           <div className="_wiki-detail-side-empty">
             <ArchitectureIcon size="large" />
-            <Text theme="label">点击节点查看内容</Text>
+            <Text theme="label">{t('wiki.detail.graph.clickToView')}</Text>
           </div>
         )}
       </div>
@@ -1997,6 +2008,7 @@ function PagesTabContent({
   onDeletePage: (p: WikiPage) => Promise<void> | void;
   onDeleteRaw: (filename: string) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const { width: leftW, onMouseDown } = useResizable(260, 180, 400, 'left');
 
   return (
@@ -2010,7 +2022,7 @@ function PagesTabContent({
             className={`_wiki-detail-filter-tag${pageTypeFilter === 'all' ? ' is-active' : ''}`}
             onClick={() => setPageTypeFilter('all')}
           >
-            全部 {allPages.length}
+            {t('wiki.detail.pages.all', { count: allPages.length })}
           </button>
           {types.map((type) => (
             <button
@@ -2047,9 +2059,9 @@ function PagesTabContent({
                   type="text"
                   className="_wiki-detail-page-delete"
                   onClick={() => onDeletePage(page)}
-                  tooltip="删除页面"
+                  tooltip={t('wiki.detail.pages.deletePage')}
                 >
-                  删除
+                  {t('wiki.detail.pages.delete')}
                 </Button>
               </div>
             );
@@ -2087,7 +2099,7 @@ function PagesTabContent({
                         {tag.trim()}
                       </Tag>
                     ))}
-                {metadata.created && <Text theme="label">创建：{metadata.created}</Text>}
+                {metadata.created && <Text theme="label">{t('wiki.detail.created', { date: metadata.created })}</Text>}
               </div>
             )}
             {readLoading ? (
@@ -2105,7 +2117,7 @@ function PagesTabContent({
         ) : (
           <div className="_wiki-detail-side-empty">
             <BooksIcon size="large" />
-            <Text theme="label">选择左侧页面查看内容</Text>
+            <Text theme="label">{t('wiki.detail.pages.selectPage')}</Text>
           </div>
         )}
       </div>
@@ -2127,6 +2139,7 @@ function RawFilesSection({
   onRead: (filename: string) => void;
   onDelete: (filename: string) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [files, setFiles] = useState<{ filename: string; size: number }[]>([]);
   const [expanded, setExpanded] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -2140,7 +2153,7 @@ function RawFilesSection({
     knowledgeApi.wiki
       .rawList(wikiId)
       .then((r: any) => setFiles(r?.files || []))
-      .catch((e: any) => tea.notify.error(e?.message || '加载原始文档列表失败'))
+      .catch((e: any) => tea.notify.error(e?.message || t('wiki.notify.loadRawFailed')))
       .finally(() => setLoading(false));
   }, [wikiId]);
 
@@ -2158,7 +2171,7 @@ function RawFilesSection({
   if (loading)
     return (
       <div className="_wiki-detail-rawfiles-loading">
-        <FolderIcon size={12} /> 原始文档加载中…
+        <FolderIcon size={12} /> {t('wiki.detail.rawFiles.loading')}
       </div>
     );
   if (files.length === 0) return null;
@@ -2167,7 +2180,7 @@ function RawFilesSection({
     <div className="_wiki-detail-rawfiles">
       <button className="_wiki-detail-rawfiles-toggle" onClick={() => setExpanded(!expanded)}>
         <span>
-          <FolderIcon size={12} /> 原始文档（{files.length}）
+          <FolderIcon size={12} /> {t('wiki.detail.rawFiles.title', { count: files.length })}
         </span>
         <ChevronRightIcon size={12} className={expanded ? 'is-open' : ''} />
       </button>
@@ -2184,9 +2197,9 @@ function RawFilesSection({
                 type="text"
                 className="_wiki-detail-page-delete"
                 onClick={() => void handleDelete(file.filename)}
-                tooltip="删除原始文档"
+                tooltip={t('wiki.detail.rawFiles.deleteRaw')}
               >
-                删除
+                {t('common.delete')}
               </Button>
             </div>
           ))}
@@ -2212,8 +2225,9 @@ function KnowledgeGraphEmbed({
   onNodeClick: (node: GraphNode) => void;
   highlightNode: string | null;
 }) {
+  const { t } = useTranslation();
   return (
-    <Suspense fallback={<StatusTip status="loading" loadingText="加载图谱组件…" />}>
+    <Suspense fallback={<StatusTip status="loading" loadingText={t('wiki.detail.graph.loading')} />}>
       <KnowledgeGraphLazy
         data={data}
         loading={loading}

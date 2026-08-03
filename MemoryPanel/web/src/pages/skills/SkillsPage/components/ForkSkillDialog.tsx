@@ -16,6 +16,7 @@
 
 import { useState } from 'react';
 import { Alert, Button, Form, Input, Modal, Select } from 'tea-component';
+import { useTranslation } from 'react-i18next';
 import '@/pages/ResourcePage/components/allocate-dialog.css';
 
 import {
@@ -53,6 +54,7 @@ export default function ForkSkillDialog(props: {
   onClose: () => void;
   onForked: (newSkill: SkillSummary) => void;
 }) {
+  const { t } = useTranslation();
   const [agentId, setAgentId] = useState(props.agents[0]?.id ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +66,7 @@ export default function ForkSkillDialog(props: {
 
   async function submit(): Promise<void> {
     if (!agentId) {
-      setError('请选择 agent。');
+      setError(t('forkSkill.error.noAgent'));
       return;
     }
     setError(null);
@@ -86,7 +88,7 @@ export default function ForkSkillDialog(props: {
       });
       if (existing.items.some((s) => s.name === newName)) {
         throw new Error(
-          `Agent "${agentId}" 下已存在同名 skill "${newName}"（单个 agent 不允许重名）。请先删除旧副本再重试。`
+          t('forkSkill.error.duplicate', { agent: agentId, name: newName })
         );
       }
 
@@ -127,11 +129,11 @@ export default function ForkSkillDialog(props: {
       });
 
       const resourceInfo = resources.length > 0
-        ? `（已复制 ${resources.length} 个资源文件）`
+        ? t('forkSkill.success.withResources', { name: props.skillName, agent: agentId, count: resources.length })
         : (full.manifest?.length ?? 0) > 0
-          ? `（注意：原 skill 有 ${full.manifest?.length} 个资源文件，复制均失败，如需请手动重新 import）`
-          : '';
-      setSuccess(`已 fork "${props.skillName}" @ ${agentId}${resourceInfo}`);
+          ? t('forkSkill.success.allFailed', { name: props.skillName, agent: agentId, count: full.manifest?.length ?? 0 })
+          : t('forkSkill.success.noResources', { name: props.skillName, agent: agentId });
+      setSuccess(resourceInfo);
       setTimeout(() => props.onForked(created), 800);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -141,27 +143,27 @@ export default function ForkSkillDialog(props: {
   }
 
   return (
-    <Modal visible caption="Fork Skill 给 Agent" size="s" onClose={props.onClose} disableEscape={submitting}>
+    <Modal visible caption={t('forkSkill.caption')} size="s" onClose={props.onClose} disableEscape={submitting}>
       <Modal.Body>
         <Form>
-          <Form.Item label="说明">
-            <Form.Text>将 {props.skillName} 复制一份给所选 agent。副本与源 skill 解耦，agent 之后可独立修改副本。可在下方自定义副本名。</Form.Text>
+          <Form.Item label={t('forkSkill.descLabel')}>
+            <Form.Text>{t('forkSkill.desc', { name: props.skillName })}</Form.Text>
           </Form.Item>
-          <Form.Item label="Agent" required>
+          <Form.Item label={t('forkSkill.agent')} required>
             <Select
               size="full"
               value={agentId}
               onChange={setAgentId}
-              placeholder="请选择 agent"
+              placeholder={t('forkSkill.agent.placeholder')}
               options={props.agents.map((a) => ({ value: a.id, text: `${a.id} · ${a.name}` }))}
             />
           </Form.Item>
-          <Form.Item label="副本名" required>
+          <Form.Item label={t('forkSkill.copyName')} required>
             <Input
               size="full"
               value={newName}
               onChange={setNewName}
-              placeholder="副本 skill 名称"
+              placeholder={t('forkSkill.copyName.placeholder')}
             />
           </Form.Item>
           {error && <Form.Item><Alert type="error">{error}</Alert></Form.Item>}
@@ -169,8 +171,8 @@ export default function ForkSkillDialog(props: {
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={() => void submit()} disabled={submitting || !agentId || !newName.trim()} loading={submitting}>Fork</Button>
-        <Button onClick={props.onClose} disabled={submitting}>取消</Button>
+        <Button type="primary" onClick={() => void submit()} disabled={submitting || !agentId || !newName.trim()} loading={submitting}>{t('forkSkill.submit')}</Button>
+        <Button onClick={props.onClose} disabled={submitting}>{t('forkSkill.cancel')}</Button>
       </Modal.Footer>
     </Modal>
   );

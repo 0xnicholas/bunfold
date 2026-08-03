@@ -151,6 +151,26 @@ export interface ConversationAddResult {
   archived?: ConversationAddArchived;
 }
 
+/** Input for /v3/skill/conversation/force-archive — 手动强制归档。 */
+export interface ForceArchiveInput {
+  space_id: string;
+  user_id: string;
+  team_id: string;
+  agent_id: string;
+  session_id: string;
+  reason?: string;
+  task_id?: string;
+}
+
+/** Response from /v3/skill/conversation/force-archive. */
+export interface ForceArchiveResponse {
+  status: "archived" | "empty";
+  task_id?: string;
+  archived_at_ms?: number;
+  archive_key?: string;
+  message?: string;
+}
+
 /** Input for /v3/skill/listing — owner-agent skill injection. */
 export interface ListingInput extends IdFields {
   /** Optional search query; when set, plugin uses FTS BM25 to match relevant skills. */
@@ -235,6 +255,17 @@ export class CoreSkillClient {
     opts: CoreSkillRequestOptions = {},
   ): Promise<ConversationAddResult> {
     return this.post<ConversationAddResult>("/v3/skill/conversation/add", input, opts);
+  }
+
+  /**
+   * `POST /v3/skill/conversation/force-archive` — 手动强制归档当前 session buffer。
+   * 跳过阈值判断，直接调 trigger.archive()。
+   */
+  async forceArchive(
+    input: ForceArchiveInput,
+    opts: CoreSkillRequestOptions = {},
+  ): Promise<ForceArchiveResponse> {
+    return this.post<ForceArchiveResponse>("/v3/skill/conversation/force-archive", input, opts);
   }
 
   /**

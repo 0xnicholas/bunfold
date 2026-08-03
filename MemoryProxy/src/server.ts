@@ -9,6 +9,7 @@ import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
 import { createMemoryBridgeHandler } from "./memory/memory-bridge.js";
 import { createInstanceDestroyHandler } from "./routes/instance-destroy.js";
 import { createRateLimitHandlers } from "./routes/rate-limits.js";
+import { hasCostGuardMarker } from "./routes/whitelist.js";
 import { tryActivateStorage, tryActivateRedis } from "./injection/index.js";
 import { getEffectiveBackend } from "./storage/factory.js";
 import type { ProxyConfig } from "./types.js";
@@ -22,6 +23,28 @@ export function createApp(config: ProxyConfig): Hono {
   // pipeline will still call these later when the first main request lands.
   if (!tryActivateStorage(config)) {
     tryActivateRedis(config);
+  }
+
+  // `/cost-guard` marker 门控 (P0 前置)：
+  // markerOptIn=false 时 marker 完全作废——任何路径里带 `/cost-guard/` 段的请求
+  // 都直接 404，避免 catch-all `POST /*` 把它兜住走成默认路由（会产生迷惑：
+  // 客户端以为自己"启用了 marker"，proxy 却按 default_passthrough 处理）。
+  // 放在最前面，早于所有业务路由。
+  if (!config.costGuard.markerOptIn) {
+    app.use("*", async (c, next) => {
+      if (hasCostGuardMarker(c.req.path)) {
+        return c.json(
+          {
+            error: "cost_guard_marker_disabled",
+            message:
+              "The /cost-guard URL marker is disabled on this deployment. " +
+              "Remove the /cost-guard segment from the path, or set costGuard.markerOptIn=true.",
+          },
+          404,
+        );
+      }
+      await next();
+    });
   }
 
   // Health check
@@ -92,6 +115,18 @@ export function createApp(config: ProxyConfig): Hono {
   app.put("/v3/admin/rate-limits", rateLimitHandlers.put);
   app.delete("/v3/admin/rate-limits", rateLimitHandlers.delete);
 
+  // ── Session management endpoints (mem: command 底层接口, 面板前端可复用) ──
+  app.post("/v3/session/refresh-cache", (c) => {
+    return import("./routes/session-refresh.js").then(({ createSessionRefreshHandler }) =>
+      createSessionRefreshHandler(config)(c),
+    );
+  });
+  app.post("/v3/session/force-archive-skill", (c) => {
+    return import("./routes/session-force-archive.js").then(({ createSessionForceArchiveHandler }) =>
+      createSessionForceArchiveHandler(config)(c),
+    );
+  });
+
   // ── Whitelisted primary endpoints ────────────────────────────────────────
   // Anthropic Messages API
   app.post("/v1/messages", (c) => handleAnthropicMessages(c, config));
@@ -109,6 +144,38 @@ export function createApp(config: ProxyConfig): Hono {
   //   CB:  OPENAI_BASE_URL=http://<proxy>:8096/codebuddy/<spaceId>
   // 路径示例: /claude-code/mem-example001/v1/messages
   //          /codebuddy/mem-example001/v1/chat/completions
+  // `/cost-guard` marker: primary handler 检测到该段后启用 cost-guard 路由；
+  // 默认路径（不带 marker）则跳过 router 直接透传上游。
+  //
+  // marker 机制受 `config.costGuard.markerOptIn` 门控：
+  //   - false（默认/线上）: 不注册这两条路由——所有请求走 `/:agent/:spaceId/v1/...`，
+  //     handler 内 useGuard 恒 true，行为等同于历史"默认走 router"。此时任何
+  //     `/cost-guard/...` 请求都命中不到路由，走到最终 catch-all 或返 404
+  //     （catch-all `/*` 存在，会 fallthrough 到 handleChatCompletions；下面在
+  //     顶部加了 marker→404 拒绝，见 handler / anthropicHandler）。
+  //   - true（测试环境）: 注册以下两条 marker 路由；handler 内根据 marker 决定
+  //     是否走 router。
+  // 详见 `hasCostGuardMarker`。
+  // Hono 优先匹配更精确的路径，需注册在通用 `/:agent/:spaceId/v1/...` 之前。
+  if (config.costGuard.markerOptIn) {
+    app.post("/:agent/:spaceId/cost-guard/v1/messages", (c) => handleAnthropicMessages(c, config));
+    app.post("/:agent/:spaceId/cost-guard/v1/chat/completions", (c) => handleChatCompletions(c, config));
+  }
+
+  // `/analyse` marker (asset-reflection 内部效果评估) —— 跟 cost-guard 完全对称：
+  // 由 `injection.assetReflection.markerOptIn` 门控。marker 只是一个透明标记，
+  // handler 内 (AssetReflectionInjector) 检测到即在 system prompt 末尾追加
+  // <asset_reflection>；不带 marker 的请求走原有正常路由。
+  //
+  // ⚠️ 关键：不注册这两条路由时，`/{agent}/{spaceId}/analyse/v1/messages`
+  // (5 段) 会 fall through 到最下面的 catch-all `POST /*` → handleChatCompletions
+  // (OpenAI handler)，把 Anthropic body 打到 OpenAI 端点 → 上游 400。所以只要
+  // markerOptIn=true 就必须显式注册这两条 anthropic/openai 5 段路由。
+  if (config.injection?.assetReflection?.markerOptIn) {
+    app.post("/:agent/:spaceId/analyse/v1/messages", (c) => handleAnthropicMessages(c, config));
+    app.post("/:agent/:spaceId/analyse/v1/chat/completions", (c) => handleChatCompletions(c, config));
+  }
+
   app.post("/:agent/:spaceId/v1/messages", (c) => handleAnthropicMessages(c, config));
   app.post("/:agent/:spaceId/v1/messages/count_tokens", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/:agent/:spaceId/v1/embeddings", (c) => handleAuxiliaryEndpoint(c, config));

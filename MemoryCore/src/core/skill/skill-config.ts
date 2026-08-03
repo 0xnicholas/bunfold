@@ -142,6 +142,24 @@ export function resolveSkillConfig(
     );
   }
 
+  // --------------- archiveBytes (单一归档尺寸旋钮) ---------------
+  // 派生 7 个内部字段: bytesThreshold / requestCompressThresholdBytes /
+  // chunkMaxBytes / headKeepBytes / tailKeepBytes / headChars / tailChars。
+  // 无效值 (<=0 或非整数) 落回默认 40KB + warn。
+  const DEFAULT_ARCHIVE_BYTES = 40 * 1024;
+  const rawArchive = input.extraction?.archiveBytes;
+  let archiveBytes = DEFAULT_ARCHIVE_BYTES;
+  if (rawArchive !== undefined) {
+    if (!Number.isInteger(rawArchive) || rawArchive <= 0) {
+      logger.warn(
+        `${TAG} extraction.archiveBytes=${rawArchive} invalid (must be positive integer); ` +
+          `falling back to default ${DEFAULT_ARCHIVE_BYTES}`,
+      );
+    } else {
+      archiveBytes = rawArchive;
+    }
+  }
+
   const resolved: ResolvedSkillConfig = {
     enabled: true,
     storeBackend,
@@ -158,8 +176,22 @@ export function resolveSkillConfig(
       toolCallThreshold: input.extraction?.toolCallThreshold ?? 10,
       model: input.extraction?.model,
       maxIterations: input.extraction?.maxIterations ?? 16,
-      headChars: input.extraction?.headChars ?? 8000,
-      tailChars: input.extraction?.tailChars ?? 32000,
+      archiveBytes,
+      maxTokens: input.extraction?.maxTokens,
+      // 派生字段 — 命名和默认值来自 add-handler.ts / oversize-strategy.ts
+      // 的 DEFAULT_* 常量，保持"改一个 archiveBytes 一切随动"的语义。
+      bytesThreshold: archiveBytes,
+      requestCompressThresholdBytes: archiveBytes,
+      chunkMaxBytes: 2 * archiveBytes,
+      headKeepBytes: archiveBytes,
+      tailKeepBytes: archiveBytes,
+      headChars: archiveBytes,
+      tailChars: archiveBytes,
+    },
+    compress: {
+      toolContentThresholdBytes: input.compress?.toolContentThresholdBytes ?? 2048,
+      headBytes: input.compress?.headBytes ?? 1024,
+      tailBytes: input.compress?.tailBytes ?? 1024,
     },
     resources: {
       maxResourceSizeBytes:

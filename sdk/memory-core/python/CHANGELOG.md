@@ -1,5 +1,27 @@
 # Changelog — tencentdb-agent-memory-sdk-python
 
+## Unreleased — 2026-07-31
+
+### Added
+
+- **`SkillClient.conversation_force_archive(...)`** and
+  **`AsyncSkillClient.conversation_force_archive(...)`** — wrapper for
+  ``POST /v3/skill/conversation/force-archive``, the manual archive
+  trigger added in ``MemoryCore@7ed54292`` (2026-07-28). Complements
+  the existing ``/conversation/add`` auto-triggers (tool_call ≥ 10,
+  bytes ≥ 40 KB) by letting callers force an archive regardless of
+  buffer size. Brings the SDK to the full 15 ``/v3/skill/*`` endpoints
+  defined by ``src/gateway/skill-handlers.ts``.
+- Required kwargs: ``session_id / user_id / team_id / agent_id``;
+  optional ``space_id / reason / task_id``. Like ``conversation_add``,
+  this method does NOT merge constructor defaults — callers pass ids
+  explicitly.
+- Response is ``{"status": "empty" | "archived", ...}``. When
+  ``status == "archived"``, ``task_id / archived_at_ms / archive_key``
+  sit at the top level (NOT nested under ``archived``), which is
+  different from ``conversation_add``'s response shape — see the
+  docstring.
+
 ## Unreleased — 2026-07-20
 
 ### Added

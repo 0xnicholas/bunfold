@@ -1,300 +1,258 @@
-import { type CSSProperties } from 'react';
-import { type MemoryLayer, type MemoryBlock, type AtomicItem, type LayerTone } from './types';
-import { LAYERS, PROSE_CLASS } from './constants';
+import { useLayoutEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import { type MemoryLayer, type MemoryBlock, type AtomicItem } from './types';
+import { useLayers } from './constants';
 import { getLayerCount, stripAtMention, extractRole, formatDisplayTime } from './utils';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { AppIcon, UsergroupIcon } from 'tea-icons-react';
+import { MarkdownView } from '@/components/MarkdownView';
+import { AppIcon, UsergroupIcon, ChevronDownIcon } from 'tea-icons-react';
 
-const LAYER_TONE_STYLE: Record<LayerTone, CSSProperties> = {
-  default: {
-    background: 'var(--tea-color-bg-secondary-default)',
-    borderColor: 'var(--tea-color-border-primary-default)',
-    color: 'var(--tea-color-text-primary)',
-  },
-  brand: {
-    background: 'var(--tea-color-bg-brand-lighten-default)',
-    borderColor: 'var(--tea-color-border-brand-default)',
-    color: 'var(--tea-color-text-brand-default)',
-  },
-  success: {
-    background: 'var(--tea-color-bg-success-lighten-default)',
-    borderColor: 'var(--tea-color-border-success-default)',
-    color: 'var(--tea-color-text-success-default)',
-  },
-  warning: {
-    background: 'var(--tea-color-bg-warning-lighten-default)',
-    borderColor: 'var(--tea-color-border-warning-default)',
-    color: 'var(--tea-color-text-warning-default)',
-  },
-};
-
-const ROLE_STYLE: Record<'user' | 'system' | 'assistant', CSSProperties> = {
-  user: LAYER_TONE_STYLE.brand,
-  system: LAYER_TONE_STYLE.warning,
-  assistant: LAYER_TONE_STYLE.success,
-};
-
-export function BlockDetail({
-  block,
-  layer,
-  onLayerChange,
-  agentLabel,
-  layerPage,
-  layerPageSize,
-  layerLoading,
-  onLayerPageChange,
-  onLayerItemLoad,
-  layerItemLoadingId,
-}: {
-  block: MemoryBlock;
-  layer: MemoryLayer;
-  onLayerChange: (l: MemoryLayer) => void;
-  agentLabel: (id?: string) => string;
-  layerPage: number;
-  layerPageSize: number;
-  layerLoading: boolean;
-  onLayerPageChange: (page: number) => void;
-  onLayerItemLoad?: (itemId: string) => void;
-  layerItemLoadingId?: string | null;
+export function BlockDetail({ block, layer, onLayerChange, agentLabel, layerPage, layerPageSize, layerLoading, onLayerPageChange, onLayerItemLoad, layerItemLoadingId, onL0LoadMore, l0MoreLoading }: {
+  block: MemoryBlock; layer: MemoryLayer; onLayerChange: (l: MemoryLayer) => void; agentLabel: (id?: string) => string;
+  layerPage: number; layerPageSize: number; layerLoading: boolean; onLayerPageChange: (page: number) => void;
+  onLayerItemLoad?: (itemId: string) => void; layerItemLoadingId?: string | null;
+  /** L0 加载更多（追加更早的对话）；未传则不展示加载入口 */
+  onL0LoadMore?: () => void; l0MoreLoading?: boolean;
 }) {
+  const { t } = useTranslation();
+  const LAYERS = useLayers();
   const total = getLayerCount(block, layer);
   const pageCount = Math.max(1, Math.ceil(total / layerPageSize));
-  const showPager = (layer === 'L0' || layer === 'L1') && total > layerPageSize;
+  // L0 改为「下拉加载更多」交互，翻页器只保留 L1
+  const showPager = layer === 'L1' && total > layerPageSize;
   const safePage = Math.min(layerPage, pageCount - 1);
 
+  // ── L0 滚动容器与锚点 ──
+  // l0HasMore：已加载条数 < 后端总数。初次进入/切换块时滚到底部（最新消息）；
+  // 加载更多（旧消息插入顶部）后保持视口位置不跳动。
+  const l0Total = getLayerCount(block, 'L0');
+  const l0HasMore = block.layers.L0.length < l0Total;
+  const l0ScrollRef = useRef<HTMLDivElement>(null);
+  const l0AnchorRef = useRef<'bottom' | number | null>(null);
+  const l0KeyRef = useRef<string>('');
+  const l0PrevScrollTopRef = useRef<number>(Infinity);
+
+  const l0Key = `${block.id}|${layer}`;
+  if (l0KeyRef.current !== l0Key) {
+    l0KeyRef.current = l0Key;
+    // 进入 L0 时设锚点滚到底部；离开 L0 也要更新 ref，
+    // 这样从 L1 切回 L0 时 key 不同才会重新触发滚到底部。
+    if (layer === 'L0') {
+      l0AnchorRef.current = 'bottom';
+    }
+  }
+
+  useLayoutEffect(() => {
+    if (layer !== 'L0') return;
+    const el = l0ScrollRef.current;
+    if (!el) return;
+    const anchor = l0AnchorRef.current;
+    if (anchor === 'bottom') {
+      el.scrollTop = el.scrollHeight;
+      l0AnchorRef.current = null;
+    } else if (typeof anchor === 'number') {
+      el.scrollTop += el.scrollHeight - anchor;
+      l0AnchorRef.current = null;
+    }
+  }, [layer, block.layers.L0.length, layerLoading]);
+
+  function triggerL0LoadMore() {
+    const el = l0ScrollRef.current;
+    if (el) l0AnchorRef.current = el.scrollHeight;
+    onL0LoadMore?.();
+  }
+
+  // 滚动到顶部时自动加载更早的对话。只有「新到达顶部」才触发
+  // （对比上一次 scrollTop），避免锚点修正引发的链式自动加载。
+  function handleL0Scroll() {
+    const el = l0ScrollRef.current;
+    if (!el) return;
+    const atTop = el.scrollTop <= 24;
+    if (atTop && l0PrevScrollTopRef.current > 24 && l0HasMore && !l0MoreLoading && !layerLoading) {
+      triggerL0LoadMore();
+    }
+    l0PrevScrollTopRef.current = el.scrollTop;
+  }
+
   return (
-    <>
-      {/* Block meta */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-[14px] font-semibold text-foreground/85 break-all">{block.title}</div>
-          <div className="text-[11px] text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-            {block.agent_id ? (
-              <span className="px-1.5 py-0.5 rounded border font-mono text-[10px] inline-flex items-center gap-0.5" style={LAYER_TONE_STYLE.success}>
-                <AppIcon size={12} /> 固定到 {agentLabel(block.agent_id)}
-              </span>
-            ) : (
-              <span className="px-1.5 py-0.5 rounded border text-[10px] inline-flex items-center gap-0.5" style={LAYER_TONE_STYLE.warning}>
-                <UsergroupIcon size={12} /> 团队记忆池
-              </span>
-            )}
-            {block.uploaded_by_user_id && (
-              <>
-                <span>上传：<span className="font-mono">@{block.uploaded_by_user_id}</span></span>
-                <span>·</span>
-              </>
-            )}
-            <span>更新：{new Date(block.updated_at_ms).toLocaleString()}</span>
-          </div>
+    <div className="_memory-detail">
+      <div className="_memory-detail-header">
+        <div className="_memory-detail-title">{block.title}</div>
+        <div className="_memory-detail-meta">
+          {block.agent_id ? (
+            <span className="_memory-badge" title={t('memory.detail.fixedTo', { name: agentLabel(block.agent_id) })}>
+              <AppIcon size={10} /> {t('memory.detail.fixedTo', { name: agentLabel(block.agent_id) })}
+            </span>
+          ) : (
+            <span className="_memory-badge" title={t('memory.detail.teamPool')}>
+              <UsergroupIcon size={10} /> {t('memory.detail.teamPool')}
+            </span>
+          )}
+          {block.uploaded_by_user_id && (
+            <span className="_memory-detail-meta-item">
+              {t('memory.list.uploadedBy')}
+              <span className="_memory-detail-mono">@{block.uploaded_by_user_id}</span>
+            </span>
+          )}
+          <span className="_memory-detail-meta-item">
+            {t('memory.detail.updated', { time: new Date(block.updated_at_ms).toLocaleString() })}
+          </span>
         </div>
       </div>
 
-      {/* L0–L3 tabs */}
-      <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="_memory-detail-layers">
         {LAYERS.map((l) => {
           const active = l.id === layer;
-          // 该层计数是否「已知」：后端给了真实值、或用户已切到该层加载过（layerCounts 写回），
-          // 或本地已有条目。未知的层（还没访问过）显示占位「·」而非误导性的 0，
-          // 提示用户点击后才按需加载真实计数。
-          const loadedLen = l.id === 'L0' ? block.layers.L0.length : block.layers[l.id].length;
-          const known = block.layerCounts[l.id] !== undefined || loadedLen > 0;
-          const cnt = getLayerCount(block, l.id);
+          const loadedLen = l.id === 'L0' ? block.layers.L0.length : block.layers[l.id as MemoryLayer].length;
+          const known = block.layerCounts[l.id as MemoryLayer] !== undefined || loadedLen > 0;
+          const cnt = getLayerCount(block, l.id as MemoryLayer);
           return (
             <button
               key={l.id}
-              onClick={() => onLayerChange(l.id)}
-              className={[
-                'rounded-xl border px-3 py-2 text-left transition',
-                active ? '' : 'border-border bg-card hover:bg-accent'
-              ].join(' ')}
-              style={active ? { ...LAYER_TONE_STYLE[l.tone], boxShadow: 'var(--tea-shadow-sm)' } : undefined}
+              onClick={() => onLayerChange(l.id as MemoryLayer)}
+              className={`_memory-detail-layer-btn${active ? ' _memory-detail-layer-btn--active' : ''}`}
             >
-              <div className="flex items-center justify-between">
-                <span className={`text-[12px] font-semibold ${active ? '' : 'text-foreground/70'}`}>{l.label}</span>
-                <span
-                  className={`text-[11px] font-mono ${active ? '' : 'text-muted-foreground'}`}
-                  title={known ? undefined : '点击加载该层内容'}
-                >
+              <div className="_memory-detail-layer-btn-top">
+                <span className="_memory-detail-layer-label">{l.label}</span>
+                <span className="_memory-detail-layer-count" title={known ? undefined : t('memory.detail.clickToLoad')}>
                   {known ? cnt : '·'}
                 </span>
               </div>
-              <div className={`text-[10px] mt-0.5 ${active ? 'opacity-90' : 'text-muted-foreground'}`}>{l.desc}</div>
+              <div className="_memory-detail-layer-desc">{l.desc}</div>
             </button>
           );
         })}
       </div>
 
-      {/* Layer content */}
-      <div className="mt-4">
+      <div className="_memory-detail-body">
         {layerLoading ? (
-          // 加载态：骨架占位替换旧内容 —— 否则切换层 / 翻页 / 切换记忆块时，上一次的
-          // 条目会残留在屏幕上直到新数据返回，视觉上就是"闪一下旧内容"。
-          <div className="space-y-2">
+          <div className="_memory-detail-skeleton">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="h-14 rounded-lg border border-border bg-muted/50 animate-pulse" />
+              <div key={i} className="_memory-detail-skeleton-row" />
             ))}
           </div>
         ) : layer === 'L0' ? (
           block.layers.L0.length > 0 ? (
-            <div className="space-y-0">
-              {block.layers.L0.map((msg, idx) => {
+            <div className="_memory-detail-l0-scroll" ref={l0ScrollRef} onScroll={handleL0Scroll}>
+              {/* 顶部：加载更早的对话（滚动到顶部自动触发，也可点击） */}
+              {(l0HasMore || l0MoreLoading || block.layers.L0.length > layerPageSize) && (
+                <div className="_memory-detail-l0-more">
+                  {l0MoreLoading ? (
+                    <span className="_memory-detail-l0-more-text">{t('memory.detail.loading')}</span>
+                  ) : l0HasMore ? (
+                    <button type="button" className="_memory-detail-l0-more-btn" onClick={triggerL0LoadMore}>
+                      {t('memory.detail.loadMore')}
+                    </button>
+                  ) : (
+                    <span className="_memory-detail-l0-more-text">{t('memory.detail.allLoaded')}</span>
+                  )}
+                </div>
+              )}
+              <div className="_memory-detail-l0-list">
+              {/* 后端按最新对话从上到下返回，聊天视图需要反转为「旧在上、新在下」 */}
+              {[...block.layers.L0].reverse().map((msg, idx) => {
                 const role = extractRole(msg.role || msg.title || '');
                 const cleanBody = stripAtMention(msg.body);
-                const isUser = role === 'user';
-                const isSystem = role === 'system';
-                const roleTone = isUser ? 'user' : isSystem ? 'system' : 'assistant';
+                const roleTone = role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
                 const time = formatDisplayTime(msg.created_at);
                 return (
-                  <div
-                    key={msg.id || idx}
-                    className="flex px-3 py-2.5"
-                    style={{
-                      background: ROLE_STYLE[roleTone].background,
-                      borderBottom: idx !== block.layers.L0.length - 1 ? '1px solid var(--tea-color-border-secondary-default)' : undefined,
-                    }}
-                  >
-                    <span
-                      className="shrink-0 w-16 text-[10px] font-semibold leading-5 select-none"
-                      style={{ color: ROLE_STYLE[roleTone].color }}
-                    >
-                      {role.toUpperCase()}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <pre className="text-[12px] whitespace-pre-wrap break-all leading-relaxed font-sans m-0" style={{ color: 'var(--tea-color-text-paragraph)' }}>
-                        {cleanBody}
-                      </pre>
-                      {time && (
-                        <div className="mt-1 text-[10px] font-mono select-none" style={{ color: 'var(--tea-color-text-tertiary)' }} title={msg.created_at}>
-                          {time}
-                        </div>
-                      )}
+                  <div key={msg.id || idx} className={`_memory-detail-l0-row _memory-detail-l0-row--${roleTone}`}>
+                    <div className="_memory-detail-l0-bubble">
+                      <div className="_memory-detail-l0-bubble-head">
+                        <span className={`_memory-detail-l0-role _memory-detail-l0-role--${roleTone}`}>
+                          {role.toUpperCase()}
+                        </span>
+                        {time && (
+                          <span className="_memory-detail-l0-time" title={msg.created_at}>{time}</span>
+                        )}
+                      </div>
+                      <pre className="_memory-detail-l0-body">{cleanBody}</pre>
                     </div>
                   </div>
                 );
               })}
+              </div>
             </div>
           ) : (
-            <div className="text-[12px] px-2 py-6 text-center" style={{ color: 'var(--tea-color-text-tertiary)' }}>该记忆块未保留 L0 对话原文。</div>
+            <div className="_memory-detail-empty">{t('memory.detail.noL0')}</div>
           )
         ) : (
-          <AtomicList
-            layer={layer}
-            items={block.layers[layer]}
-            onLoadItem={onLayerItemLoad}
-            loadingItemId={layerItemLoadingId}
-          />
+          <AtomicList layer={layer} items={block.layers[layer]} onLoadItem={onLayerItemLoad} loadingItemId={layerItemLoadingId} />
         )}
         {showPager && (
-          <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3 text-[11px] text-muted-foreground">
-            <span>
-              第 {safePage + 1} / {pageCount} 页 · 当前 {block.layers[layer].length} 条 / 共 {total} 条
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                className="rounded border px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={layerLoading || safePage <= 0}
-                onClick={() => onLayerPageChange(safePage - 1)}
-              >
-                上一页
-              </button>
-              <button
-                className="rounded border px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={layerLoading || safePage >= pageCount - 1}
-                onClick={() => onLayerPageChange(safePage + 1)}
-              >
-                下一页
-              </button>
+          <div className="_memory-detail-pager">
+            <span>{t('memory.detail.pageInfo', { page: safePage + 1, total: pageCount, current: block.layers[layer].length, total2: total })}</span>
+            <div className="_memory-detail-pager-btns">
+              <button className="_memory-detail-pager-btn" disabled={layerLoading || safePage <= 0} onClick={() => onLayerPageChange(safePage - 1)}>{t('memory.detail.prevPage')}</button>
+              <button className="_memory-detail-pager-btn" disabled={layerLoading || safePage >= pageCount - 1} onClick={() => onLayerPageChange(safePage + 1)}>{t('memory.detail.nextPage')}</button>
             </div>
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
-function AtomicList({
-  layer,
-  items,
-  onLoadItem,
-  loadingItemId,
-}: {
-  layer: MemoryLayer;
-  items: AtomicItem[];
-  onLoadItem?: (itemId: string) => void;
-  loadingItemId?: string | null;
-}) {
+function AtomicList({ layer, items, onLoadItem, loadingItemId }: { layer: MemoryLayer; items: AtomicItem[]; onLoadItem?: (itemId: string) => void; loadingItemId?: string | null; }) {
+  const { t } = useTranslation();
+  const LAYERS = useLayers();
   const meta = LAYERS.find((l) => l.id === layer)!;
   if (items.length === 0) {
-    return (
-      <div className="text-[12px] text-muted-foreground px-2 py-4">
-        该记忆块在 {meta.short} 层暂无条目。可由 curator / 高层提炼后写入。
-      </div>
-    );
+    return (<div className="_memory-detail-empty">{t('memory.detail.emptyLayer', { layer: meta.short })}</div>);
   }
   return (
-    <ul className="space-y-2">
+    <ul className="_memory-detail-atomic-list">
       {items.map((it) => {
         const isL2 = layer === 'L2';
         const hasBody = it.body.trim().length > 0;
         const loading = loadingItemId === it.id;
+        const time = formatDisplayTime(it.created_at);
+        const head = (
+          <>
+            <span className={`_memory-detail-atomic-layer _memory-detail-atomic-layer--${meta.tone}`}>{layer}</span>
+            <span className="_memory-detail-atomic-title" title={it.title}>{it.title}</span>
+            <span className="_memory-detail-atomic-head-right">
+              {loading && <span className="_memory-detail-atomic-loading">{t('memory.detail.loading')}</span>}
+              {time && <span className="_memory-detail-atomic-time" title={it.created_at}>{time}</span>}
+              {isL2 && (
+                <ChevronDownIcon
+                  size={12}
+                  className={`_memory-detail-atomic-chevron${hasBody ? ' _memory-detail-atomic-chevron--open' : ''}`}
+                />
+              )}
+            </span>
+          </>
+        );
         return (
-          <li key={it.id} className="rounded-lg border border-border bg-card p-3 hover:bg-accent transition">
-            <div className="flex items-start gap-2">
-              <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold" style={LAYER_TONE_STYLE[meta.tone]}>
-                {layer}
-              </span>
-              <div className="min-w-0 flex-1">
-                {isL2 ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold text-foreground/85 hover:text-primary"
-                      onClick={() => onLoadItem?.(it.id)}
-                      disabled={loading}
-                      title={it.title}
-                    >
-                      {it.title}
-                    </button>
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={() => onLoadItem?.(it.id)}
-                      disabled={loading}
-                    >
-                      {loading ? '加载中…' : hasBody ? '收起原文' : '展开原文'}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-[13px] font-semibold text-foreground/85">{it.title}</div>
-                )}
-                {layer === 'L2' || layer === 'L3' ? (
-                  hasBody ? (
-                    <div className={`mt-1 ${PROSE_CLASS}`}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.body}</ReactMarkdown>
-                    </div>
-                  ) : isL2 ? null : (
-                    <div className="mt-1 text-[12px] text-muted-foreground">暂无原文。</div>
-                  )
-                ) : (
-                  <pre className="mt-1 text-[12px] text-foreground/70 whitespace-pre-wrap font-sans leading-relaxed">{it.body}</pre>
-                )}
-                <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
-                  {it.refs?.map((r) => (
-                    <span key={r} className="px-1 rounded bg-muted text-foreground/70 font-mono">{r}</span>
-                  ))}
-                  {it.tags?.map((t) => (
-                    <span key={t} className="px-1 rounded bg-muted text-foreground/70">#{t}</span>
-                  ))}
-                  {(() => {
-                    const time = formatDisplayTime(it.created_at);
-                    return time ? (
-                      <span className="ml-auto font-mono" style={{ color: 'var(--tea-color-text-tertiary)' }} title={it.created_at}>{time}</span>
-                    ) : null;
-                  })()}
-                </div>
+          <li key={it.id} className="_memory-detail-atomic-item">
+            {isL2 ? (
+              <button
+                type="button"
+                className="_memory-detail-atomic-head _memory-detail-atomic-head--btn"
+                onClick={() => onLoadItem?.(it.id)}
+                disabled={loading}
+              >
+                {head}
+              </button>
+            ) : (
+              <div className="_memory-detail-atomic-head">{head}</div>
+            )}
+
+            {layer === 'L2' || layer === 'L3' ? (
+              hasBody ? (
+                <MarkdownView bare className="_memory-detail-atomic-md">{it.body}</MarkdownView>
+              ) : isL2 ? null : (
+                <div className="_memory-detail-atomic-no-body">{t('memory.detail.noBody')}</div>
+              )
+            ) : (
+              <pre className="_memory-detail-atomic-body">{it.body}</pre>
+            )}
+
+            {(it.refs?.length || it.tags?.length) ? (
+              <div className="_memory-detail-atomic-meta">
+                {it.refs?.map((r) => (<span key={r} className="_memory-detail-atomic-ref">{r}</span>))}
+                {it.tags?.map((tag) => (<span key={tag} className="_memory-detail-atomic-tag">#{tag}</span>))}
               </div>
-            </div>
+            ) : null}
           </li>
         );
       })}

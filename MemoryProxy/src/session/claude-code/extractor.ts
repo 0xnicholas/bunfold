@@ -304,6 +304,10 @@ function matchTaskInTeam(text: string, team: TeamOption): string | undefined {
  *   - MORE_MARKER：用户点了 "更多 →"，调用方翻页；
  *   - BYPASS_MARKER：declined / 空答复 / 兼容旧表单的显式跳过；
  *   - null：identify 得到答案但匹配不到 team.tasks（调用方按未识别 → bypass 处理）。
+ *
+ * defaultTaskId 兜底关联通过 fetchTeamsAndAgents 头部注入实现 —— 用户选"本次
+ * 不关联任务" label 时走 matchTaskInTeam 命中虚拟条目、返回 defaultTaskId，无
+ * 需在此单独分支。
  */
 export function extractTaskFromOptionText(
   content: string,
@@ -321,14 +325,17 @@ export function extractTaskFromOptionText(
   // 翻页
   if (answer.includes(MORE_LABEL)) return MORE_MARKER;
 
-  // 兼容旧表单：老 UI 里的 "跳过（不选择任务）" 或用户手打 "跳过 / skip / 不关联"
-  // → 显式 bypass。新 UI 已删除该按钮，正常流程不会走到。
-  if (answer.includes(SKIP_LABEL) || SKIP_RE.test(answer.trim())) {
+  // 兼容旧表单：用户手打 "跳过 / skip / 不关联" → 显式 bypass。注意：defaultTaskId
+  // 虚拟条目的 label 是"本次不关联任务"，SKIP_RE 会命中，所以先尝试正常匹配
+  // 再走 bypass。
+  const taskId = matchTaskInTeam(answer, team);
+  if (taskId) return taskId;
+
+  if (SKIP_RE.test(answer.trim())) {
     return BYPASS_MARKER;
   }
 
-  const taskId = matchTaskInTeam(answer, team);
-  return taskId ?? null;
+  return null;
 }
 
 /**

@@ -76,6 +76,19 @@ export interface ForwardTargetRequest {
   startTime?: string;
   /** Space/tenant ID extracted from the request path. */
   spaceId?: string;
+  /**
+   * When true, run the request through the cost-guard extension. When
+   * false / undefined (the default) the handler returns a passthrough target
+   * that forwards directly to `defaultUpstreamUrl` — cost-guard is opt-in per
+   * request via the `/cost-guard` URL marker (see `hasCostGuardMarker`).
+   */
+  useGuard?: boolean;
+  /**
+   * Agent name extracted from URL path prefix (e.g. "claude-code", "codebuddy").
+   * Used by the cost-guard extension to look up per-agent cheap model overrides.
+   * Optional — if not provided, falls back to top-level cheap config.
+   */
+  agentName?: string;
 }
 
 // ─── Dynamic import + passthrough fallback ──────────────────────────────────
@@ -329,8 +342,23 @@ export async function resolveForwardTarget(
   config: ProxyConfig,
   req: ForwardTargetRequest,
 ): Promise<ForwardTarget> {
+  // Passthrough paths — all return the same shape; the reason is logged so we
+  // can tell *why* a given request skipped the extension after the fact.
+  // default_passthrough is the new default (no marker on the URL — info so
+  // routine traffic remains greppable); the other two are deployment state
+  // that's already visible at startup (debug — replay with LOG_LEVEL=debug
+  // when troubleshooting).
+  if (!req.useGuard) {
+    log.info("guard_adapter.passthrough", { reason: "default_passthrough", requestPath: req.requestPath });
+    return buildPassthroughTarget(req);
+  }
   const guard = getCostGuard(config);
-  if (!guard || !config.costGuard.enabled) {
+  if (!guard) {
+    log.debug("guard_adapter.passthrough", { reason: "extension_unavailable", requestPath: req.requestPath });
+    return buildPassthroughTarget(req);
+  }
+  if (!config.costGuard.enabled) {
+    log.debug("guard_adapter.passthrough", { reason: "extension_disabled", requestPath: req.requestPath });
     return buildPassthroughTarget(req);
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -175,14 +175,17 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       .filter((it) => it.asset_type === 'chat_memory')
       .filter((it) => it.status !== 'archived' && it.status !== 'deprecated' && it.status !== 'failed');
 
-    // 拿真实 owner_user_id（list-with-detail 不返，需要每条 asset/get；本地测试足够）
+    // 拿真实 owner_user_id 和 updated_at（list-with-detail 不返这两个字段）
     const out: MemoryBlockOut[] = await Promise.all(
       items.map(async (it) => {
         let ownerUserId = '';
+        let updatedAt = it.created_at; // 兜底：asset/get 失败时用 created_at
         try {
           const aEnv = await deps.metaKernel.invoke('asset/get', { asset_id: it.asset_id }, ctx);
           if (aEnv.code === 0 && aEnv.data) {
-            ownerUserId = (aEnv.data as AssetRaw).owner_user_id;
+            const a = aEnv.data as AssetRaw;
+            ownerUserId = a.owner_user_id;
+            updatedAt = a.updated_at || it.created_at;
           }
         } catch { /* fallback 空 */ }
         return {
@@ -190,7 +193,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           title: it.name,
           summary: buildSummary(),
           uploaded_by_user_id: ownerUserId,
-          updated_at_ms: toMs(it.created_at),
+          updated_at_ms: toMs(updatedAt),
           // 透传给前端做灰化：team 正常显示，private 灰化 + 打"已被 owner 设为私密"标签
           scope: it.visibility === 'private' ? 'private' : 'team',
           // TEMP：本地测试展示用；生产应改为懒加载
@@ -788,6 +791,10 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     const layerRaw = typeof body?.layer === 'string' ? body.layer.toUpperCase() : '';
     const limit = typeof body?.limit === 'number' && body.limit > 0 && body.limit <= 200 ? body.limit : 50;
     const offset = typeof body?.offset === 'number' && body.offset >= 0 ? body.offset : 0;
+    // before_ts: L0 游标分页参数（ISO8601）。第二页起由前端传「最后一条消息的 created_at」，
+    // 后端转换为 time_end（-1ms 排他）传给内核 /v3/conversation/query，offset 归零。
+    // 这样 VDB 只需 filter recorded_at_ms < cursor 即可，不需要 skip 大量记录。
+    const beforeTs = typeof body?.before_ts === 'string' ? body.before_ts.trim() : undefined;
 
     if (!blockId) return respondControlError(c, 400, 'MISSING_BLOCK_ID');
     if (!['L0', 'L1', 'L2', 'L3'].includes(layerRaw)) return respondControlError(c, 400, 'INVALID_LAYER');
@@ -883,9 +890,26 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         // tdai 返 { messages: [...], total } 而不是 { items: [...] }
         const { session_id: _drop, ...noSid } = idFields;
         void _drop;
+
+        // 游标分页：before_ts → time_end（-1ms 排他）。
+        // 内核 /v3/conversation/query 的 time_end 是 recorded_at_ms <= timeEndMs（含等），
+        // 游标语义需要排他（< beforeTs），否则最后一条会被重复返回。
+        // 减 1ms 把含等转为不含等。毫秒精度足够（同一 ms 的重复极少且前端有 id 去重兜底）。
+        const l0Query: Record<string, unknown> = { ...noSid };
+        if (beforeTs) {
+          const d = new Date(beforeTs);
+          if (Number.isFinite(d.getTime())) {
+            l0Query.time_end = new Date(d.getTime() - 1).toISOString();
+            l0Query.offset = 0; // 游标模式下 offset 归零
+          }
+        } else {
+          l0Query.offset = offset;
+        }
+        l0Query.limit = limit;
+
         const env = await deps.kernelHttp.postEnvelope<{ messages?: unknown[]; total?: number }>(
           '/v3/conversation/query',
-          { ...noSid, limit, offset },
+          l0Query,
           cred,
         );
         if (env.code !== 0) return respondEnvelope(c, env);

@@ -224,7 +224,7 @@ Config sections at a glance:
 | `rateLimit` | Input TPM / QPM limiting per memory instance × actual model |
 | `clickhouse` | per-turn usage reporting (billing data source) |
 | `creditReport` / `creditPricing` | Credit billing report and pricing table |
-| `agentUpstreams` | override upstream URL per agent name (e.g. route `claude-code` through CCR) |
+| `upstream.agents` | override upstream URL + apiKey per agent name (e.g. route `claude-code` through CCR) |
 
 > `injection`, `extraction`, `sessionInit`, `tdai`, `skill`, `knowledge`, `skillRuntime` are the memory-related sections — focus on them first when integrating.
 

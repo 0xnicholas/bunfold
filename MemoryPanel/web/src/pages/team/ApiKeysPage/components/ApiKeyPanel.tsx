@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Moment } from 'moment';
 import moment from 'moment';
 import {
@@ -44,24 +45,35 @@ import './api-key-panel.css';
 const { autotip } = Table.addons;
 
 export default function ApiKeyPanel() {
+  const { t } = useTranslation();
   const role = useCurrentRole();
   const { auth } = useAuthStore();
   const [keys, setKeys] = useState<UserKey[]>([]);
   const [loading, setLoading] = useState(true);
-  // 客户端接入 gateway 根地址（来自当前登录的 instance 元数据；每个实例不同）
-  const [gatewayEndpoint, setGatewayEndpoint] = useState<string | null>(null);
+  // 客户端接入 base 地址（来自当前登录的 instance 元数据；每个实例不同）。
+  // 优先取 proxy_endpoint —— 开源本地部署 core+proxy 分开时客户端要接的是 proxy；
+  // 未配置时回落 gateway_endpoint，等同老行为（线上 gateway 前置 proxy，两者合一）。
+  const [clientBaseUrl, setClientBaseUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    if (!auth?.instance_id) { setGatewayEndpoint(null); return; }
-    void metaInstancesApi.list()
+    if (!auth?.instance_id) {
+      setClientBaseUrl(null);
+      return;
+    }
+    void metaInstancesApi
+      .list()
       .then((list) => {
         if (cancelled) return;
         const hit = list.find((i) => i.instance_id === auth.instance_id);
-        setGatewayEndpoint(hit?.gateway_endpoint ?? null);
+        setClientBaseUrl(hit?.proxy_endpoint ?? hit?.gateway_endpoint ?? null);
       })
-      .catch(() => { if (!cancelled) setGatewayEndpoint(null); });
-    return () => { cancelled = true; };
+      .catch(() => {
+        if (!cancelled) setClientBaseUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [auth?.instance_id]);
 
   const refresh = useCallback(async () => {
@@ -113,9 +125,9 @@ export default function ApiKeyPanel() {
 
   async function handleDelete(key: UserKey) {
     const ok = await tea.confirm({
-      message: `确认吊销 Key「${key.key_prefix || key.key_id}」？`,
-      description: '吊销后对应客户端将立即失效，且不可恢复。',
-      okText: '吊销',
+      message: t('apiKey.confirm.revoke', { name: key.key_prefix || key.key_id }),
+      description: t('apiKey.confirm.revoke.desc'),
+      okText: t('apiKey.confirm.revoke.ok'),
     });
     if (!ok) return;
     try {
@@ -132,7 +144,6 @@ export default function ApiKeyPanel() {
     if (Number.isNaN(d.getTime())) return iso;
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
-
   return (
     <div className="_memory-apikey-body">
       {/* ===== 刚创建的 Key 提示（仅展示一次） ===== */}
@@ -140,8 +151,7 @@ export default function ApiKeyPanel() {
         <Alert type="success" onClose={() => setFreshKey(null)}>
           <div className="_memory-apikey-fresh">
             <p className="_memory-apikey-fresh-desc">
-              以下是 <strong>{freshKey.keyId}</strong> 的完整 Key（<strong>仅展示这一次</strong>
-              ，请立即复制并安全保存；关闭后将无法再次查看明文）：
+              {t('apiKey.fresh.desc', { keyId: freshKey.keyId })}
             </p>
             <div className="_memory-apikey-fresh-code-row">
               <code className="_memory-apikey-fresh-code">{freshKey.secret}</code>
@@ -161,22 +171,23 @@ export default function ApiKeyPanel() {
       <Justify
         left={
           <div>
-            <H3>User_Key 管理</H3>
+            <H3>{t('apiKey.title')}</H3>
             <Text theme="text" parent="div" style={{ marginTop: 4 }}>
-              管理你的 User Key，用于外部客户端接入（如 CodeBuddy / ClaudeCode CLI）。
+              {t('apiKey.desc')}
             </Text>
           </div>
         }
         right={
           role !== 'admin' ? (
-            <Button type="primary"
+            <Button
+              type="primary"
               onClick={() => {
                 setShowCreate(true);
                 setNewExpiresAt(null);
               }}
             >
               <AddIcon size={14} />
-              新建 Key
+              {t('apiKey.create')}
             </Button>
           ) : null
         }
@@ -191,16 +202,26 @@ export default function ApiKeyPanel() {
           columns={[
             {
               key: 'key_id',
-              header: 'Key ID',
+              header: t('apiKey.table.keyId'),
               render: (key) => (
-                <Text parent="code" copyable style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
+                <Text
+                  parent="code"
+                  copyable
+                  style={{
+                    fontSize: 12,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   {key.key_id}
                 </Text>
               ),
             },
             {
               key: 'key_prefix',
-              header: 'Key Prefix',
+              header: t('apiKey.table.keyPrefix'),
               render: (key) => (
                 <Text parent="code" style={{ fontSize: 12 }}>
                   {key.key_prefix || '—'}
@@ -209,34 +230,35 @@ export default function ApiKeyPanel() {
             },
             {
               key: 'created_at',
-              header: '创建时间',
+              header: t('apiKey.table.createdAt'),
               width: 180,
               render: (key) => <Text theme="text">{formatTime(key.created_at)}</Text>,
             },
             {
               key: 'expires_at',
-              header: '失效时间',
+              header: t('apiKey.table.expiresAt'),
               width: 180,
               render: (key) => {
-                if (key.revoked_at) return <Text theme="weak">已吊销</Text>;
+                if (key.revoked_at) return <Text theme="weak">{t('apiKey.revoked')}</Text>;
                 return key.expires_at ? (
                   <Text theme="text">{formatTime(key.expires_at)}</Text>
                 ) : (
-                  <Text theme="weak">永不过期</Text>
+                  <Text theme="weak">{t('apiKey.neverExpire')}</Text>
                 );
               },
             },
             {
               key: 'actions',
-              header: '操作',
+              header: t('apiKey.table.actions'),
               width: 100,
               align: 'right',
               render: (key) => (
-                <Button type="text"
+                <Button
+                  type="text"
                   disabled={!!key.revoked_at}
                   onClick={() => void handleDelete(key)}
                 >
-                  吊销
+                  {t('apiKey.revoke')}
                 </Button>
               ),
             },
@@ -246,10 +268,8 @@ export default function ApiKeyPanel() {
               isLoading: loading,
               emptyText: (
                 <div className="_memory-apikey-empty">
-                  <div className="_memory-apikey-empty-title">你还没有任何 User Key</div>
-                  <div className="_memory-apikey-empty-desc">
-                    点击右上角「新建 Key」创建你的第一把 Key
-                  </div>
+                  <div className="_memory-apikey-empty-title">{t('apiKey.empty.title')}</div>
+                  <div className="_memory-apikey-empty-desc">{t('apiKey.empty.desc')}</div>
                 </div>
               ),
               onRetry: () => void refresh(),
@@ -265,29 +285,32 @@ export default function ApiKeyPanel() {
         未登录理论上不会走到这个页（LoginGate 挡在外面），仍保留占位 fallback 兜底。
       */}
       <Card>
-        <Card.Body title="客户端接入地址">
+        <Card.Body title={t('apiKey.endpoint.title')}>
           {auth?.instance_name && (
             <div style={{ marginBottom: 8, fontSize: 11, color: 'var(--text-weak)' }}>
-              当前实例：<code>{auth.instance_name}</code>
+              {t('apiKey.endpoint.current')}
+              <code>{auth.instance_name}</code>
               <span style={{ opacity: 0.6, marginLeft: 6 }}>({auth.instance_id})</span>
             </div>
           )}
           <div className="_memory-apikey-endpoints">
             {(() => {
-              // gateway_endpoint 未拉到就显示加载中；防止用户误抄硬编码 URL
-              if (!gatewayEndpoint) {
+              // base 未拉到就显示加载中；防止用户误抄硬编码 URL
+              if (!clientBaseUrl) {
                 return (
                   <Text theme="weak" style={{ fontSize: 11 }}>
-                    正在加载接入地址…
+                    {t('apiKey.endpoint.loading')}
                   </Text>
                 );
               }
-              // 去掉结尾斜杠，避免 base + /path 拼成双斜杠
-              const base = gatewayEndpoint.replace(/\/+$/, '');
+              // 去掉结尾斜杠，避免 base + /path 拼成双斜杠（! 绕过闭包窄化）
+              const base = clientBaseUrl!.replace(/\/+$/, '');
               const iid = auth?.instance_id ?? '[instance-id]';
               const endpoints: Array<{ label: string; url: string }> = [
-                { label: 'CodeBuddy',   url: `${base}/codebuddy/${iid}` },
+                { label: 'CodeBuddy', url: `${base}/codebuddy/${iid}` },
                 { label: 'Claude Code', url: `${base}/claude-code/${iid}` },
+                { label: 'OpenClaw', url: `${base}/openclaw/default` },
+                { label: 'Hermes', url: `${base}/hermes/default` },
               ];
               return endpoints.map((ep) => (
                 <div className="_memory-apikey-endpoint" key={ep.label}>
@@ -308,7 +331,7 @@ export default function ApiKeyPanel() {
                       {ep.url}
                     </code>
                     <Copy text={ep.url}>
-                      <Button>复制</Button>
+                      <Button>{t('apiKey.endpoint.copy')}</Button>
                     </Copy>
                   </div>
                 </div>
@@ -319,22 +342,40 @@ export default function ApiKeyPanel() {
       </Card>
       {/* ===== 新建弹窗：只需设置「过期时间」（可留空＝永不过期），不再需要名称 ===== */}
       {showCreate && (
-        <Modal visible caption="新建 User_Key" size="s" onClose={() => setShowCreate(false)} disableEscape={creating}>
+        <Modal
+          visible
+          caption={t('apiKey.create.caption')}
+          size="s"
+          onClose={() => setShowCreate(false)}
+          disableEscape={creating}
+        >
           <Modal.Body>
             <Form>
-              <Form.Item label="过期时间" extra="留空表示永不过期">
+              <Form.Item
+                label={t('apiKey.create.expiresAt')}
+                extra={t('apiKey.create.expiresAt.extra')}
+              >
                 <DatePicker
                   value={newExpiresAt ?? undefined}
                   onChange={(v) => setNewExpiresAt(v)}
                   disabledDate={(d) => !d.isBefore(moment().startOf('day'))}
-                  placeholder="留空表示永不过期"
+                  placeholder={t('apiKey.create.expiresAt.placeholder')}
                 />
               </Form.Item>
             </Form>
           </Modal.Body>
           <Modal.Footer>
-            <Button type="primary" onClick={() => void handleCreate()} disabled={creating} loading={creating}>创建</Button>
-            <Button onClick={() => setShowCreate(false)} disabled={creating}>取消</Button>
+            <Button
+              type="primary"
+              onClick={() => void handleCreate()}
+              disabled={creating}
+              loading={creating}
+            >
+              {t('apiKey.create.submit')}
+            </Button>
+            <Button onClick={() => setShowCreate(false)} disabled={creating}>
+              {t('apiKey.create.cancel')}
+            </Button>
           </Modal.Footer>
         </Modal>
       )}

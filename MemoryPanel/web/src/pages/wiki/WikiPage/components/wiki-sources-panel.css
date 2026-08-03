@@ -25,10 +25,13 @@
   gap: 8px;
 }
 
-/* 工具栏 SearchBox 最小宽度，避免 placeholder 文字被截断。 */
-._asset-wiki-toolbar .tea-searchbox {
+/* 工具栏 SearchBox 最小宽度，避免 placeholder 文字被截断。
+   英文 "Search name / ID" 约需 180px。实际类名是 .tea-form--search / .tea-search。 */
+._asset-wiki-toolbar .tea-form--search,
+._asset-wiki-toolbar .tea-search {
   flex: 1 1 200px;
   min-width: 200px;
+  max-width: 100%;
 }
 
 ._asset-wiki-empty {

@@ -106,16 +106,80 @@ const PROXY_PREFIX_RE = /^\/proxy\/[^/]+/;
 const AGENT_PREFIX_RE = /^\/(claude-code|codebuddy|cursor|anthropic|openai)(?:\/[^/]+)?(?=\/v1\/)/i;
 
 /**
+ * `/cost-guard` marker 正则：位于 `/{agent}/{spaceId}` 之后的独立 segment。
+ *
+ * 语义（相对早期的 `/direct` marker 已反转）：**默认 passthrough**，
+ * 仅在请求路径显式带上 `/cost-guard` 段时才让 primary handler 走 cost-guard 路由。
+ *
+ * 命中条件（两者同时满足）：
+ *   1. lookahead `(?=/)`——marker 是一个独立 segment（后面还有内容），
+ *      不限定紧接 `/v1/` 还是裸尾巴。这样 marker 与客户端拼的尾巴解耦：
+ *        - `/codebuddy/{spaceId}/cost-guard/chat/completions`（CB 裸尾）
+ *        - `/claude-code/{spaceId}/cost-guard/v1/messages`（CC 带 /v1）
+ *      两种都识别为 marker。词干 `/cost-guarded/` `/cost-guarding/`
+ *      `/pre-cost-guard/` 因 lookahead 要求 `/cost-guard` 后紧邻 `/` 而被隔断。
+ *   2. lookbehind `(?<=(?:/[^/]+){2,})`——marker 前必须有 ≥ 2 段非空 segment，
+ *      使 marker 只在 `/{agent}/{spaceId}/cost-guard/...` 或
+ *      `/proxy/{spaceId}/cost-guard/...` 的结构下命中；spaceId 恰好
+ *      叫 "cost-guard"（三段结构 `/agent/cost-guard/...`）不会误触发。
+ *
+ * 见 `hasCostGuardMarker` 让 primary handler 判定是否**启用** router；
+ * `normalizeWhitelistRequestPath` 同步剥离它以保证白名单匹配继续工作。
+ */
+const COST_GUARD_MARKER_RE = /(?<=(?:\/[^/]+){2,})\/cost-guard(?=\/)/;
+
+/**
+ * `/analyse` marker：结构完全对齐 `/cost-guard`——位于 `/{agent}/{spaceId}` 之后
+ * 的独立 segment，命中即表示"本次请求要走内部资产反思模式"。
+ *
+ * 由 `injection.assetReflection.markerOptIn` 门控，
+ * 见 `AssetReflectionInjector`。跟 cost-guard 不同，`/analyse` **不注册**
+ * 专门的 hono 路由——它是完全透明的标记：正常业务路径继续处理，
+ * 只是 injector 检测到 marker 后往 system prompt 末尾多贴一段反思提示。
+ *
+ * `normalizeWhitelistRequestPath` 剥掉这个 marker，保证白名单后缀匹配继续工作。
+ */
+const ANALYSE_MARKER_RE = /(?<=(?:\/[^/]+){2,})\/analyse(?=\/)/;
+
+/**
+ * 请求路径是否携带 `/cost-guard` marker（位于 `/v1/` 之前的独立 segment）。
+ * 携带时 primary handler 走完整的 cost-guard 路由；不带时（默认）直接透传到默认上游。
+ */
+export function hasCostGuardMarker(requestPath: string): boolean {
+  if (!requestPath) return false;
+  const withoutQuery = requestPath.split("?", 1)[0] ?? "";
+  return COST_GUARD_MARKER_RE.test(withoutQuery);
+}
+
+/**
+ * 请求路径是否携带 `/analyse` marker（结构同 `/cost-guard`）。
+ * 命中时 `AssetReflectionInjector` 会在系统提示词末尾追加 `<asset_reflection>` 块。
+ */
+export function hasAnalyseMarker(requestPath: string): boolean {
+  if (!requestPath) return false;
+  const withoutQuery = requestPath.split("?", 1)[0] ?? "";
+  return ANALYSE_MARKER_RE.test(withoutQuery);
+}
+
+/**
  * 规范化请求路径以便白名单匹配。
  *
  * 1. 剥离 query string
- * 2. 剥离 `/proxy/{spaceId}` 前缀（如有）
- * 3. 剥离 `/{agent}/{spaceId}` 前缀（如 `/claude-code/{spaceId}/v1/messages`）
+ * 2. 剥离 `/cost-guard` marker（如有，见 `hasCostGuardMarker`）
+ * 3. 剥离 `/analyse` marker（如有，见 `hasAnalyseMarker`）
+ * 4. 剥离 `/proxy/{spaceId}` 前缀（如有）
+ * 5. 剥离 `/{agent}/{spaceId}` 前缀（如 `/claude-code/{spaceId}/v1/messages`）
  */
 export function normalizeWhitelistRequestPath(requestPath: string): string {
   if (!requestPath) return "";
   const withoutQuery = requestPath.split("?", 1)[0] ?? "";
-  const withoutProxy = withoutQuery.replace(PROXY_PREFIX_RE, "");
+  // Order matters: strip `/cost-guard` / `/analyse` markers FIRST while the
+  // surrounding `/{prefix}/{spaceId}` context is still intact — the markers'
+  // lookbehind requires ≥ 2 leading segments. Then AGENT/PROXY prefixes see
+  // the canonical `/v1/...` tail (their lookahead needs it) and remove themselves.
+  const withoutCostGuard = withoutQuery.replace(COST_GUARD_MARKER_RE, "");
+  const withoutAnalyse = withoutCostGuard.replace(ANALYSE_MARKER_RE, "");
+  const withoutProxy = withoutAnalyse.replace(PROXY_PREFIX_RE, "");
   return withoutProxy.replace(AGENT_PREFIX_RE, "");
 }
 

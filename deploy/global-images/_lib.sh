@@ -77,6 +77,16 @@ find_docker() {
 
 DOCKER="$(find_docker)"
 
+# PULL=1 时拉取镜像最新版本。
+# 默认关闭：docker run 在本地没有镜像时会自动拉，但本地已有同名 :latest 时会直接复用，
+# 不会感知远端更新——想升级到最新 latest 就带 PULL=1。
+pull_image() {
+  local image="$1"
+  [[ "${PULL:-0}" == "1" ]] || return 0
+  info "拉取镜像 $image"
+  $DOCKER pull "$image" || die "拉取 $image 失败。"
+}
+
 # 幂等移除同名容器
 rm_container_if_exists() {
   local name="$1"

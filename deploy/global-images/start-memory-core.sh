@@ -42,6 +42,7 @@ if ! $DOCKER network inspect "$NETWORK" >/dev/null 2>&1; then
   $DOCKER network create "$NETWORK" >/dev/null
 fi
 
+pull_image "$MEMORY_CORE_IMAGE"
 rm_container_if_exists "$CONTAINER"
 
 # ── 生成 gateway config.yaml，挂到容器 /data/config/tdai-gateway.yaml ──

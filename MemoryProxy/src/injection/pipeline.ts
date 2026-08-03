@@ -294,8 +294,14 @@ export class InjectionPipeline {
       // prewarm failures and cache-store outages/TTL expiry. Fall back to
       // hook.execute() and self-heal the cache so subsequent turns hit the
       // fast path.
+      //
+      // Exception: `metadata.readOnly === true` (FORK 请求) —— cache-miss 时**不
+      // self-heal put**。因为 fork 请求的目的是复用 MAIN 已建的 cache 命中；如果
+      // miss 时 self-heal，写入内容可能跟 MAIN 那次不 byte-level 一致，反而破坏
+      // 后续主对话的 cache 语义。
       const fresh = await hook.execute(ctx);
-      if (fresh.length > 0) {
+      const readOnly = ctx.metadata.readOnly === true;
+      if (fresh.length > 0 && !readOnly) {
         try {
           this.hookCacheRepo.put(spaceId, userId, agentSource, sessionId, hook.id, fresh);
           console.log(`[hook-cache] session=${sessionId} hook=${hook.id} miss → self-heal put (blocks=${fresh.length})`);
@@ -305,6 +311,8 @@ export class InjectionPipeline {
             err instanceof Error ? err.message : String(err),
           );
         }
+      } else if (readOnly) {
+        console.log(`[hook-cache] session=${sessionId} hook=${hook.id} miss (readOnly, no self-heal) blocks=${fresh.length}`);
       } else {
         console.log(`[hook-cache] session=${sessionId} hook=${hook.id} miss + execute returned empty (no self-heal)`);
       }

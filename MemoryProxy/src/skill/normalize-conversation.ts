@@ -43,6 +43,8 @@
  * 累计爆炸 (10 次 tool_use 或 40KB 就触发一次归档)。
  */
 
+import { resolveAgentAdapter } from "../agent-adapters/index.js";
+
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 export type Protocol = "anthropic" | "openai";
@@ -158,19 +160,20 @@ export function normalizeConversation(
   rawMessages: RawMessage[],
   protocol: Protocol,
   assistantMessage: RawMessage | null,
+  agentSource: string = "claude-code",
 ): NormalizedMessage[] {
   const out: NormalizedMessage[] = [];
   for (const m of rawMessages) {
     if (!m || typeof m !== "object") continue;
     const converted = protocol === "anthropic"
-      ? convertAnthropicMessage(m)
-      : convertOpenAIMessage(m);
+      ? convertAnthropicMessage(m, agentSource)
+      : convertOpenAIMessage(m, agentSource);
     for (const c of converted) out.push(c);
   }
   if (assistantMessage) {
     const asstConverted = protocol === "anthropic"
-      ? convertAnthropicMessage({ role: "assistant", ...assistantMessage })
-      : convertOpenAIMessage({ role: "assistant", ...assistantMessage });
+      ? convertAnthropicMessage({ role: "assistant", ...assistantMessage }, agentSource)
+      : convertOpenAIMessage({ role: "assistant", ...assistantMessage }, agentSource);
     for (const c of asstConverted) out.push(c);
   }
   return out;
@@ -178,7 +181,7 @@ export function normalizeConversation(
 
 // ─── Anthropic ─────────────────────────────────────────────────────────────
 
-function convertAnthropicMessage(msg: RawMessage): NormalizedMessage[] {
+function convertAnthropicMessage(msg: RawMessage, agentSource: string): NormalizedMessage[] {
   const role = msg.role;
   const content = msg.content;
 
@@ -197,7 +200,7 @@ function convertAnthropicMessage(msg: RawMessage): NormalizedMessage[] {
   }
 
   if (role === "user") {
-    return convertAnthropicUser(content);
+    return convertAnthropicUser(content, agentSource);
   }
 
   // 其它 role 一律 drop
@@ -249,7 +252,7 @@ function convertAnthropicAssistant(content: unknown): NormalizedMessage[] {
   return out;
 }
 
-function convertAnthropicUser(content: unknown): NormalizedMessage[] {
+function convertAnthropicUser(content: unknown, agentSource: string): NormalizedMessage[] {
   if (typeof content === "string") {
     return [{ role: "user", content }];
   }
@@ -258,34 +261,32 @@ function convertAnthropicUser(content: unknown): NormalizedMessage[] {
   }
 
   const out: NormalizedMessage[] = [];
-  const textParts: string[] = [];
   const toolResults: NormalizedMessage[] = [];
 
+  // 收集所有 tool_result（单独输出成 role=tool_result 消息）
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
     const b = block as Record<string, unknown>;
-    const t = b.type;
-
-    if (t === "text") {
-      const txt = b.text;
-      if (typeof txt === "string" && txt.length > 0) textParts.push(txt);
-    } else if (t === "tool_result") {
-      const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
-      // tool_result.content 可能是 string / array of {type:"text",text} / other
-      const resultText = anthropicToolResultContentToString(b.content);
-      toolResults.push({
-        role: "tool_result",
-        content: resultText,
-        tool_call_id: id,
-        // 注意: anthropic tool_result 没有 tool_name 字段, proxy 也不做反查
-        // (core schema 已放宽为 optional)
-      });
-    }
-    // image / 其它 block type 丢弃
+    if (b.type !== "tool_result") continue;
+    const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
+    // tool_result.content 可能是 string / array of {type:"text",text} / other
+    const resultText = anthropicToolResultContentToString(b.content);
+    toolResults.push({
+      role: "tool_result",
+      content: resultText,
+      tool_call_id: id,
+      // 注意: anthropic tool_result 没有 tool_name 字段, proxy 也不做反查
+      // (core schema 已放宽为 optional)
+    });
   }
 
-  if (textParts.length > 0) {
-    out.push({ role: "user", content: textParts.join("\n") });
+  // text 部分：通过 agentAdapter 按客户端规则提取"用户真正键入的文本"：
+  //   - claude-code: 取最后一个 text block（跳过 <system-reminder> 前缀元数据）
+  //   - codebuddy / unknown: 走保守的"拼接所有 text"（等价改造前老逻辑）
+  const adapter = resolveAgentAdapter(agentSource);
+  const userText = adapter.extractUserText(content);
+  if (typeof userText === "string" && userText.length > 0) {
+    out.push({ role: "user", content: userText });
   }
   for (const tr of toolResults) out.push(tr);
   return out;
@@ -310,7 +311,7 @@ function anthropicToolResultContentToString(rc: unknown): string {
 
 // ─── OpenAI ────────────────────────────────────────────────────────────────
 
-function convertOpenAIMessage(msg: RawMessage): NormalizedMessage[] {
+function convertOpenAIMessage(msg: RawMessage, agentSource: string): NormalizedMessage[] {
   const role = msg.role;
   const content = msg.content;
 
@@ -319,7 +320,18 @@ function convertOpenAIMessage(msg: RawMessage): NormalizedMessage[] {
     return [];
   }
   if (role === "user") {
-    return [{ role: "user", content: contentToString(content) }];
+    // 通过 adapter 按客户端规则提取"用户真正键入的文本"，跟 anthropic 侧对称：
+    //   - codebuddy: 走 <user_query> 抽取（剥掉 <user_info> / <additional_data> /
+    //     <question_answer> 等 CB pseudo-XML wrapper），返回 null 时该轮不进
+    //     skill buffer（避免污染 skill 抽取语料）
+    //   - unknown / cursor 等: 走 default 兜底（拼接所有 text，等价改造前老逻辑）
+    // 详见 agent-adapters/codebuddy.ts + common/user-query-extractor.ts。
+    const adapter = resolveAgentAdapter(agentSource);
+    const userText = adapter.extractUserText(content);
+    if (typeof userText === "string" && userText.length > 0) {
+      return [{ role: "user", content: userText }];
+    }
+    return [];
   }
   if (role === "tool") {
     // openai role=tool → role=tool_result

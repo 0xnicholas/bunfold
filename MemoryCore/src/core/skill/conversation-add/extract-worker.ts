@@ -32,6 +32,8 @@ import type {
   ISkillExtractor,
 } from "../queue/types.js";
 import { runInRootContext } from "../../report/otel-context.js";
+import { obsLogger } from "../../report/obs-logger.js";
+import { trace } from "../../report/trace.js";
 
 /**
  * 把 candidates 落到业务侧（例如调 SkillCore.create/patch，或者直接写 SkillStore）。
@@ -210,15 +212,35 @@ export class SkillConversationExtractWorker {
     const dropped: string[] = [];
 
     const agentKey = `${agent.space_id}|${agent.user_id}|${agent.team_id}|${agent.agent_id}`;
+    // [obs] worker 段结构化事件：consume_start → acquire_lock → read_head →
+    //   read_archive → extractor → apply_candidates → delete_task → consume_done。
+    // 拿到 task_id 之前用 agent_key + worker_id 定位；拿到 task_id 之后每条事件
+    // 都带 task_id —— handler 侧 skill.trigger.enqueue_agent 事件已带同一 task_id，
+    // 后端按 task_id 就能拉全 handler + worker 双段。
+    // obsLogger 内部 try/catch + 后端降级，不需要额外防御。
+    const workerId = this.opts.workerId;
+    const t0Consume = Date.now();
+    obsLogger.info("skill.worker.consume_start", {
+      worker_id: workerId, agent_key: agentKey,
+    });
     this.logger.info(`[skill-conv-worker] dequeued agent=${agentKey}`);
 
     // ② 抢 extract-lock
+    const t0Lock = Date.now();
     const handle = await q.acquireExtractLock(agent, extractLockTtl);
+    obsLogger.info("skill.worker.acquire_lock", {
+      worker_id: workerId, agent_key: agentKey,
+      dur_ms: Date.now() - t0Lock, acquired: !!handle,
+    });
     if (!handle) {
       this.logger.info(`[skill-conv-worker] extract-lock contended agent=${agentKey}, requeue+sleep`);
       await q.requeueAgent(agent);
       const jitter = Math.floor(Math.random() * (this.opts.lockContentionSleepJitterMs ?? 500));
       await sleep((this.opts.lockContentionSleepMs ?? 2000) + jitter);
+      obsLogger.info("skill.worker.consume_done", {
+        worker_id: workerId, agent_key: agentKey,
+        outcome: "lock_contended", dur_ms: Date.now() - t0Consume,
+      });
       return { agent, processedTaskIds: [], lockContended: true };
     }
     this.logger.info(`[skill-conv-worker] acquired extract-lock agent=${agentKey}`);
@@ -259,6 +281,7 @@ export class SkillConversationExtractWorker {
         // LPUSH——新 task 落地了但 Redis 队列毫无记录，永久卡死成幽灵任务。
         // 把 removeAgent 收进同一把锁，跟 trigger-service.ts 的 fix
         // （enqueueAgent 挪进写 task 的临界区）配合，保证两侧互斥。
+        const t0Head = Date.now();
         const head = await q.withTasksMutex(agent, mutexOpts, async () => {
           const doc = await this.opts.buffer.readTasks(agent);
           const first = doc.tasks[0] ?? null;
@@ -267,11 +290,32 @@ export class SkillConversationExtractWorker {
           }
           return first;
         });
+        obsLogger.info("skill.worker.read_head", {
+          worker_id: workerId, agent_key: agentKey,
+          dur_ms: Date.now() - t0Head, has_head: !!head,
+        });
 
         if (!head) {
           // tasks 空 → agent 已在上面的临界区内下线，跳出
+          obsLogger.info("skill.worker.consume_done", {
+            worker_id: workerId, agent_key: agentKey,
+            outcome: "empty", dur_ms: Date.now() - t0Consume,
+          });
           return { agent, processedTaskIds, dropped };
         }
+
+        // task_id 就位：从此往下所有事件都带 task_id，跟 handler 侧同 task_id
+        // 关联（handler 的 skill.trigger.enqueue_agent 已经带过一次）。
+        const t0Task = Date.now();
+        obsLogger.info("skill.worker.task_start", {
+          worker_id: workerId,
+          task_id: head.task_id,
+          task_ref_id: head.task_ref_id,
+          session_id: head.session_id,
+          team_id: head.team_id,
+          agent_id: head.agent_id,
+          archive_key: head.archive_key,
+        });
 
         // ④ 读 archive
         let candidates: ExtractedCandidate[] | null = null;
@@ -280,12 +324,23 @@ export class SkillConversationExtractWorker {
           this.logger.info(
             `[skill-conv-worker] processing task_id=${head.task_id} archive_key=${head.archive_key}`,
           );
+          const t0Arch = Date.now();
           const archive = await this.opts.buffer.readArchive(head.archive_key);
+          obsLogger.info("skill.worker.read_archive", {
+            worker_id: workerId, task_id: head.task_id,
+            dur_ms: Date.now() - t0Arch,
+            found: !!archive,
+            msg_count: archive?.messages?.length ?? 0,
+          });
           if (!archive) {
             isGhost = true;
             this.logger.warn(
               `[skill-conv-worker] ghost task, dropping task_id=${head.task_id} archive_key=${head.archive_key}`,
             );
+            obsLogger.warn("skill.worker.ghost", {
+              worker_id: workerId, task_id: head.task_id,
+              archive_key: head.archive_key,
+            });
           } else {
             const conversation = (archive.messages ?? []).map((m) => ({
               role: String(m.role ?? "user"),
@@ -294,6 +349,7 @@ export class SkillConversationExtractWorker {
             this.logger.info(
               `[skill-conv-worker] extract start task_id=${head.task_id} messages=${conversation.length}`,
             );
+            const t0Ext = Date.now();
             const result = await this.opts.extractor.extract({
               task_id: head.task_id,
               team_id: head.team_id,
@@ -312,13 +368,25 @@ export class SkillConversationExtractWorker {
                 : undefined,
             });
             candidates = result.candidates ?? [];
+            obsLogger.info("skill.worker.extractor", {
+              worker_id: workerId, task_id: head.task_id,
+              dur_ms: Date.now() - t0Ext,
+              candidates: candidates.length,
+              msg_count: conversation.length,
+            });
             this.logger.info(
               `[skill-conv-worker] extract done task_id=${head.task_id} candidates=${candidates.length}`,
             );
+            const t0Sink = Date.now();
             await this.opts.sink.applyCandidates({
               task: head,
               candidates,
               workerId: this.opts.workerId,
+            });
+            obsLogger.info("skill.worker.apply_candidates", {
+              worker_id: workerId, task_id: head.task_id,
+              dur_ms: Date.now() - t0Sink,
+              candidates: candidates.length,
             });
           }
         } catch (err) {
@@ -330,6 +398,13 @@ export class SkillConversationExtractWorker {
           const category = classifyError(err as Error);
           if (category === "transient") {
             this.logTransientFailure(head.task_id, errMsg);
+            // 注意：outcome 用 `retry_transient` 简写，不含 "transient" 关键字 ——
+            // DLQ 单测用 .includes("transient") 判定 transient 采样计数，
+            // 避免 obsLogger 事件也被算进去。
+            obsLogger.info("skill.worker.task_done", {
+              worker_id: workerId, task_id: head.task_id,
+              outcome: "retry_transient", dur_ms: Date.now() - t0Task,
+            });
             await sleep(this.opts.failureRequeueSleepMs ?? 2000);
             await q.requeueAgent(agent);
             break;
@@ -337,6 +412,10 @@ export class SkillConversationExtractWorker {
           // permanent
           // 清掉 transient 计数器，避免历史 transient 干扰后续采样。
           this.transientFailStreak.delete(head.task_id);
+          obsLogger.info("skill.worker.task_done", {
+            worker_id: workerId, task_id: head.task_id,
+            outcome: "dlq_or_retry", dur_ms: Date.now() - t0Task,
+          });
           await sleep(this.opts.failureRequeueSleepMs ?? 2000);
           await this.handlePermanentFailure(agent, head, errMsg, mutexOpts);
           break;
@@ -351,6 +430,8 @@ export class SkillConversationExtractWorker {
         // 要 removeAgent，但 archive() 恰好在这之前抢到锁写入了新 task 且
         // 已经 enqueueAgent —— 之后本函数再 removeAgent 把 Set/List 清空，
         // 新写入的 task 就变成了 Redis 队列里彻底找不到记录的幽灵任务。
+        const t0Del = Date.now();
+        let remainingTasks = 0;
         await q.withTasksMutex(agent, mutexOpts, async () => {
           const doc = await this.opts.buffer.readTasks(agent);
           const before = doc.tasks.length;
@@ -359,17 +440,53 @@ export class SkillConversationExtractWorker {
             doc.updated_at_ms = this.opts.now?.() ?? Date.now();
             await this.opts.buffer.writeTasks(agent, doc);
           }
+          remainingTasks = doc.tasks.length;
           if (doc.tasks.length > 0) {
             await q.requeueAgent(agent);
           } else {
             await q.removeAgent(agent);
           }
         });
+        obsLogger.info("skill.worker.delete_task", {
+          worker_id: workerId, task_id: head.task_id,
+          dur_ms: Date.now() - t0Del,
+          remaining: remainingTasks,
+        });
+
+        // trace.report 后端 span：跟 skill.extract / skill.conversation_add 对齐，
+        // 按 task_id 就能在 clickhouse / langfuse 里拉到 handler + worker 双段。
+        try {
+          trace.report("skill.worker.task_done", {
+            task_id: head.task_id,
+            task_ref_id: head.task_ref_id,
+            team_id: head.team_id,
+            agent_id: head.agent_id,
+            session_id: head.session_id,
+            outcome: isGhost ? "ghost" : "ok",
+            candidates: candidates?.length ?? 0,
+            dur_ms: Date.now() - t0Task,
+            success: true,
+          });
+        } catch { /* noop */ }
+
+        obsLogger.info("skill.worker.task_done", {
+          worker_id: workerId, task_id: head.task_id,
+          outcome: isGhost ? "ghost" : "ok",
+          candidates: candidates?.length ?? 0,
+          dur_ms: Date.now() - t0Task,
+        });
 
         if (isGhost) dropped.push(head.task_id);
         else processedTaskIds.push(head.task_id);
       }
 
+      obsLogger.info("skill.worker.consume_done", {
+        worker_id: workerId, agent_key: agentKey,
+        outcome: "ok",
+        processed: processedTaskIds.length,
+        dropped: dropped.length,
+        dur_ms: Date.now() - t0Consume,
+      });
       return { agent, processedTaskIds, dropped };
     } finally {
       // ⑥ 停续约 + 释放 extract-lock

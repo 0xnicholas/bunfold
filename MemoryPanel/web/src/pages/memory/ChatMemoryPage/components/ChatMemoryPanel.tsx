@@ -11,20 +11,32 @@
  */
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button, Segment, Select } from 'tea-component';
-import { AppIcon, UsergroupIcon } from 'tea-icons-react';
+import { AppIcon, UsergroupIcon, UserIcon } from 'tea-icons-react';
 import { useAgents, useTeams } from '@/services';
 import { readAuth } from '@/components/LoginGate';
 import { tea } from '@/lib/tea-bridge';
 import { chatMemoryApi, type ChatMemoryBlock, type ChatMemoryLayerItem } from '@/lib/teamApi';
 import { type MemoryBlock, type MemoryLayer, type ScopeTab } from './types';
-import { SCOPE_TAB_LABELS } from './constants';
-import { formatShortTime } from './utils';
+import { useScopeTabLabels } from './constants';
+
 import { BlockDetail } from './BlockDetail';
 import { PersonalAssetsTable } from './PersonalAssetsTable';
 import { ImportBlockDialog } from './ImportBlockDialog';
 import { AllocateMemoryDialog } from './AllocateMemoryDialog';
 import { AssetPageHeader } from '@/pages/ResourcePage/components/AssetPageHeader';
+import { AssetSplitLayout } from '@/pages/ResourcePage/components/AssetSplitLayout';
+import {
+  AssetListPanel,
+  AssetItemHeader,
+  AssetItemName,
+  AssetItemBadges,
+  AssetBadge,
+  AssetBadgeYou,
+  AssetItemMeta,
+  AssetItemTime,
+} from '@/pages/ResourcePage/components/AssetListPanel';
 import './chat-memory-panel.css';
 
 const LAYER_PAGE_SIZE: Record<MemoryLayer, number> = { L0: 20, L1: 20, L2: 50, L3: 50 };
@@ -38,6 +50,8 @@ export default function ChatMemoryPanel(
     activeTeamId?: string | null;
   } = {},
 ) {
+  const { t } = useTranslation();
+  const scopeTabLabels = useScopeTabLabels();
   const auth = readAuth();
   const { activeTeamId: storeActiveTeamId, activeTeam } = useTeams();
   const currentUserId = auth?.user_id ?? '';
@@ -125,7 +139,7 @@ export default function ChatMemoryPanel(
       setBlocks(mapped);
     } catch (e: any) {
       if (seq !== fetchSeqRef.current) return;
-      tea.notify.error(e?.message || '加载记忆块失败');
+      tea.notify.error(e?.message || t('memory.notify.loadFailed'));
       setBlocks([]);
     } finally {
       if (seq === fetchSeqRef.current) setBlocksLoading(false);
@@ -133,7 +147,7 @@ export default function ChatMemoryPanel(
     // 注：不再在这里 setSelectedId —— 之前 fetchBlocks 的 useCallback 依赖
     // 了 selectedId，导致每次选中一个 block 都重新 fetch 整个列表（卡顿主因）。
     // 默认选中的逻辑改由下方独立 effect 处理。
-  }, [activeTeamId, scopeTab, agentFilter]);
+  }, [activeTeamId, scopeTab, agentFilter, t]);
 
   // 触发 fetchBlocks：依赖原始参数 + fetchBlocks，并用 key 去重防止短时间内重复触发。
   // 之前直接 `useEffect(() => fetchBlocks(), [fetchBlocks])` 会因 fetchBlocks 引用变化
@@ -253,7 +267,7 @@ export default function ChatMemoryPanel(
         );
       })
       .catch((e: any) => {
-        if (!cancelled) tea.notify.error(e?.message || '加载层数据失败');
+        if (!cancelled) tea.notify.error(e?.message || t('memory.notify.layerFailed'));
       })
       .finally(() => {
         if (!cancelled) setLayerLoading(false);
@@ -261,7 +275,7 @@ export default function ChatMemoryPanel(
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, layer, layerPage, pageSize]);
+  }, [selected?.id, layer, layerPage, pageSize, t]);
 
   const handleLayerPageChange = useCallback(
     (nextPage: number) => {
@@ -273,6 +287,47 @@ export default function ChatMemoryPanel(
     },
     [selected?.id, layer],
   );
+
+  // ── L0 加载更多（下拉/滚动到顶部触发） ──
+  // L0 固定消费第 0 页（最新一批），「加载更多」用最后一条消息的时间戳做游标
+  // （before_ts）请求更早的消息，而不是用数组长度做 offset。
+  // 原因：VDB 对大 offset 的 scan+skip 成本高，用时间戳过滤可将查询从 O(offset+limit)
+  // 降为 O(limit)。数组保持后端的新→旧顺序，渲染层再反转为旧→新，追加项出现在顶部。
+  const [l0MoreLoading, setL0MoreLoading] = useState(false);
+  const handleL0LoadMore = useCallback(async () => {
+    if (!selected?.id || layer !== 'L0' || l0MoreLoading) return;
+    const items = selected.layers.L0;
+    const total = selected.layerCounts.L0 ?? items.length;
+    if (items.length >= total) return;
+    // 游标：数组按新→旧排列，最后一条是最旧的已加载消息
+    const lastItem = items[items.length - 1];
+    const beforeTs = lastItem?.created_at;
+    setL0MoreLoading(true);
+    try {
+      // beforeTs 有值时 offset 传 0（后端按 time_end 过滤）；首屏无 beforeTs 时走 offset=0
+      const res = await chatMemoryApi.layer(
+        selected.id, 'L0', pageSize, 0, undefined, beforeTs,
+      );
+      setBlocks((prev) =>
+        prev.map((b) => {
+          if (b.id !== selected.id) return b;
+          // 防御性去重：并发/刷新导致页重叠时不重复渲染同一条消息
+          const existing = new Set(b.layers.L0.map((m) => m.id));
+          const more = res.items.filter((m) => !existing.has(m.id));
+          // 注意：游标分页下后端返回的 total 是过滤后的剩余条数（time_end < beforeTs），
+          // 不是全量总数。保留首屏拿到的全量 total，避免"加载更多后总数递减"的假象。
+          return {
+            ...b,
+            layers: { ...b.layers, L0: [...b.layers.L0, ...more] },
+          };
+        }),
+      );
+    } catch (e: any) {
+      tea.notify.error(e?.message || t('memory.notify.layerFailed'));
+    } finally {
+      setL0MoreLoading(false);
+    }
+  }, [selected, layer, l0MoreLoading, pageSize, t]);
 
   const handleLayerItemLoad = useCallback(
     async (itemId: string) => {
@@ -314,12 +369,12 @@ export default function ChatMemoryPanel(
           }),
         );
       } catch (e: any) {
-        tea.notify.error(e?.message || '加载 L2 原文失败');
+        tea.notify.error(e?.message || t('memory.notify.l2Failed'));
       } finally {
         setLayerItemLoadingId(null);
       }
     },
-    [selected?.id, selected?.layers.L2, layer],
+    [selected?.id, selected?.layers.L2, layer, t],
   );
 
   // ── 过滤与辅助 ──
@@ -371,9 +426,9 @@ export default function ChatMemoryPanel(
   // ── 操作 ──
   async function handleDeleteBlock(id: string) {
     const ok = await tea.confirm({
-      message: '确认解绑该记忆块？',
-      description: '将从当前 agent 移除该记忆块绑定。',
-      okText: '解绑',
+      message: t('memory.confirm.unbind'),
+      description: t('memory.confirm.unbind.desc'),
+      okText: t('memory.confirm.unbind.ok'),
     });
     if (!ok) return;
     try {
@@ -382,9 +437,9 @@ export default function ChatMemoryPanel(
       await chatMemoryApi.unbind(activeTeamId, id, block.agent_id);
       setBlocks((prev) => prev.filter((b) => b.id !== id));
       if (selectedId === id) setSelectedId(null);
-      tea.notify.success('已解绑');
+      tea.notify.success(t('memory.notify.unbound'));
     } catch (e: any) {
-      tea.notify.error(e?.message || '解绑失败');
+      tea.notify.error(e?.message || t('memory.notify.unbindFailed'));
     }
   }
 
@@ -397,15 +452,15 @@ export default function ChatMemoryPanel(
   }) {
     try {
       if (!activeTeamId || !agent_id) {
-        tea.notify.warning('请先选择一个 Agent');
+        tea.notify.warning(t('memory.notify.selectAgent'));
         return;
       }
       await chatMemoryApi.import(activeTeamId, agent_id, messages);
-      tea.notify.success(`导入成功 · ${messages.length} 条消息，tdai 后台正在蒸馏 L1/L2/L3`);
+      tea.notify.success(t('memory.notify.importSuccess', { count: messages.length }));
       setShowImport(false);
       fetchBlocks();
     } catch (e: any) {
-      tea.notify.error(e?.message || '导入失败');
+      tea.notify.error(e?.message || t('memory.notify.importFailed'));
     }
   }
 
@@ -415,18 +470,18 @@ export default function ChatMemoryPanel(
     // 说明只给感知，不列出被影响的 agent 列表（内核不主动 prune，故也无需精确数字）。
     if (newScope === 'private') {
       const ok = await tea.confirm({
-        message: '设为私密后，其他 Agent 将不能再使用这条记忆',
-        description: '如需再次共享，随时可以改回团队可见。',
-        okText: '设为私密',
+        message: t('memory.confirm.private'),
+        description: t('memory.confirm.private.desc'),
+        okText: t('memory.confirm.private.ok'),
       });
       if (!ok) return;
     }
     try {
       await chatMemoryApi.patchScope(block.id, newScope);
-      tea.notify.success(newScope === 'team' ? '已切换为团队可见' : '已切换为私密');
+      tea.notify.success(newScope === 'team' ? t('memory.notify.scopeTeam') : t('memory.notify.scopePrivate'));
       fetchBlocks();
     } catch (e: any) {
-      tea.notify.error(e?.message || '切换可见范围失败');
+      tea.notify.error(e?.message || t('memory.notify.scopeFailed'));
     }
   }
 
@@ -434,19 +489,19 @@ export default function ChatMemoryPanel(
   return (
     <div className="_asset-memory-page">
       <AssetPageHeader
-        title="Chat_Memory · 原子记忆块"
+        title={t('memory.title')}
         subtitle={
           activeTeam
-            ? `${activeTeam.name} · 共 ${blocks.length} 条记忆`
-            : `共 ${blocks.length} 条记忆`
+            ? t('memory.subtitle.team', { name: activeTeam.name, count: blocks.length })
+            : t('memory.subtitle.global', { count: blocks.length })
         }
         scope={
           <Segment
             value={scopeTab}
             onChange={(v) => setScopeTab(v as ScopeTab)}
-            options={(['team', 'fixed', 'personal'] as ScopeTab[]).map((t) => ({
-              value: t,
-              text: SCOPE_TAB_LABELS[t],
+            options={(['team', 'fixed', 'personal'] as ScopeTab[]).map((tab) => ({
+              value: tab,
+              text: scopeTabLabels[tab],
             }))}
           />
         }
@@ -458,7 +513,7 @@ export default function ChatMemoryPanel(
               value={agentFilter}
               onChange={setAgentFilter}
               disabled={ownedTeamAgents.length === 0}
-              placeholder="无可选 Agent"
+              placeholder={t('memory.noAgent')}
               options={ownedTeamAgents.map((agent) => ({
                 value: agent.agent_id,
                 text: `${agent.name}（${agent.agent_id}）`,
@@ -475,18 +530,18 @@ export default function ChatMemoryPanel(
                 selected.uploaded_by_user_id !== currentUserId;
               const disabled = !selected || isPrivateAndNotOwner;
               const tooltip = !selected
-                ? '请先选中一条记忆块'
+                ? t('memory.allocate.disabled')
                 : isPrivateAndNotOwner
-                  ? '该记忆已被 owner 设为私密，无法再分配给其他 Agent'
+                  ? t('memory.allocate.privateDisabled')
                   : undefined;
               return (
                 <Button onClick={() => setShowAllocate(true)} disabled={disabled} tooltip={tooltip}>
-                  分配到 Agent
+                  {t('memory.allocateToAgent')}
                 </Button>
               );
             })()}
             <Button type="primary" onClick={() => setShowImport(true)}>
-              导入记忆
+              {t('memory.import')}
             </Button>
           </>
         }
@@ -502,183 +557,103 @@ export default function ChatMemoryPanel(
           currentUserId={currentUserId}
         />
       ) : (
-        <div className="_asset-memory-body">
-          {/* Left: block list */}
-          <section className="_asset-memory-list-column">
-            <div className="_asset-memory-list-panel">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-semibold text-foreground/85">记忆块</div>
-                <div className="text-[11px] text-muted-foreground">
-                  {filtered.length} / {blocks.length}
-                </div>
-              </div>
-              {filtered.length === 0 ? (
-                <div className="text-[12px] text-muted-foreground px-3 py-4">
-                  没有匹配的记忆块。
-                </div>
-              ) : (
-                <ul className="space-y-0.5">
-                  {filtered.map((b) => {
-                    const active = selectedId === b.id;
-                    // 固定资产 tab 里被 owner 切成 private 的"外部借入记忆" —— 视觉灰化
-                    // + 加"已私密"badge，让使用者知情；主体点击禁用（详情/内容不可预览），
-                    // 但右侧"解绑"按钮保留可点，允许清理残留绑定。
-                    const isRevoked =
-                      scopeTab === 'fixed' &&
-                      b.scope === 'private' &&
-                      b.uploaded_by_user_id !== currentUserId;
-                    return (
-                      <li
-                        key={b.id}
-                        className={[
-                          '_asset-memory-list-item memory-list-item group relative border-l-2 px-3.5 py-3 pr-8 transition',
-                          isRevoked
-                            ? 'opacity-70 bg-muted/30 border-transparent'
-                            : 'cursor-pointer ' +
-                              (active
-                                ? 'border-primary bg-primary/10'
-                                : 'hover:bg-accent border-transparent'),
-                        ].join(' ')}
-                        title={
-                          isRevoked
-                            ? '该记忆已被 owner 设为私密，不可预览；可点右侧"解绑"清理该绑定。'
-                            : undefined
-                        }
-                      >
-                        <button
-                          onClick={() => {
-                            if (!isRevoked) setSelectedId(b.id);
-                          }}
-                          disabled={isRevoked}
-                          className="w-full text-left disabled:cursor-not-allowed"
-                        >
-                          <div className="font-medium text-[12px] text-foreground/85 leading-snug break-words line-clamp-2">
-                            {b.title}
-                            {isRevoked && (
-                              <span
-                                className="ml-1.5 px-1 rounded text-[9px] font-normal border align-middle"
-                                style={{
-                                  background: 'var(--tea-color-bg-warning-lighten-default)',
-                                  borderColor: 'var(--tea-color-border-warning-default)',
-                                  color: 'var(--tea-color-text-warning-default)',
-                                }}
-                              >
-                                已被 owner 设为私密
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground flex-wrap">
-                            {b.agent_id ? (
-                              <span
-                                className="px-1 rounded border font-mono truncate max-w-[120px] inline-flex items-center gap-0.5"
-                                style={{
-                                  background: 'var(--tea-color-bg-success-lighten-default)',
-                                  borderColor: 'var(--tea-color-border-success-default)',
-                                  color: 'var(--tea-color-text-success-default)',
-                                }}
-                                title={`Agent 固定资产 · ${b.agent_id}`}
-                              >
-                                <AppIcon size={12} /> {agentLabel(b.agent_id)}
-                              </span>
-                            ) : (
-                              <span
-                                className="px-1 rounded border inline-flex items-center gap-0.5"
-                                style={{
-                                  background: 'var(--tea-color-bg-warning-lighten-default)',
-                                  borderColor: 'var(--tea-color-border-warning-default)',
-                                  color: 'var(--tea-color-text-warning-default)',
-                                }}
-                                title="团队记忆池"
-                              >
-                                <UsergroupIcon size={12} /> 团队池
-                              </span>
-                            )}
-                          </div>
-                          {b.uploaded_by_user_id && (
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              上传：
-                              <span className="font-mono text-foreground/70">
-                                @{b.uploaded_by_user_id}
-                              </span>
-                              {b.uploaded_by_user_id === currentUserId && (
-                                <span className="ml-1 text-[9px] text-primary">（你）</span>
-                              )}
-                            </div>
-                          )}
-                          {/*
-                            L0/L1/L2/L3 条数徽章已从左侧列表移除：列表接口不带真实
-                            layer_counts（都是 0），旧版还会按选中块 4 次 /layer 请求
-                            做"计数校正"；用户仅在右侧详情面板查看层内容，列表徽章
-                            无实际用途，隐藏后避免误导。
-                          */}
-                          <div className="flex items-center justify-end gap-2 mt-1.5">
-                            <span className="text-[10px] text-muted-foreground shrink-0 whitespace-nowrap">
-                              {formatShortTime(b.updated_at_ms)}
-                            </span>
-                          </div>
-                        </button>
-                        {scopeTab === 'fixed' && !isSelfChatMemory(b) && (
-                          // 醒目版"解绑该记忆块"按钮：红底白字，尺寸大，永久显示。
-                          // 从当前 agent 的固定资产表移除这条 chat_memory 绑定（记忆本身不删）。
-                          // self memory 不显示（不允许解绑）。
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteBlock(b.id);
-                            }}
-                            title="解除该 Agent 对这条记忆块的固定绑定（记忆本身保留）"
-                            style={{
-                              position: 'absolute',
-                              right: '8px',
-                              top: '8px',
-                              zIndex: 10,
-                              padding: '4px 8px',
-                              borderRadius: '4px',
-                              fontSize: '12px',
-                              fontWeight: 600,
-                              color: 'var(--tea-color-text-on-bg-error-default)',
-                              background: 'var(--tea-color-bg-error-default)',
-                              border: '1px solid var(--tea-color-border-error-default)',
-                              cursor: 'pointer',
-                              boxShadow: 'var(--tea-shadow-xs)',
-                            }}
-                          >
-                            解绑
-                          </button>
+        <AssetSplitLayout
+          sidebar={
+            <AssetListPanel
+              title={t('memory.blockList')}
+              count={t('memory.blockCount', { filtered: filtered.length, total: blocks.length })}
+              loading={blocksLoading}
+              items={filtered}
+              selectedId={selectedId}
+              getItemId={(b) => b.id}
+              onSelect={(b) => setSelectedId(b.id)}
+              isItemDisabled={(b) =>
+                scopeTab === 'fixed' &&
+                b.scope === 'private' &&
+                b.uploaded_by_user_id !== currentUserId
+              }
+              emptyText={t('memory.empty.filtered')}
+              renderItem={(b) => {
+                const isRevoked =
+                  scopeTab === 'fixed' &&
+                  b.scope === 'private' &&
+                  b.uploaded_by_user_id !== currentUserId;
+                return (
+                  <>
+                    <AssetItemHeader>
+                      <AssetItemName title={b.title}>
+                        {b.title}
+                        {isRevoked && (
+                          <span className="_memory-badge _memory-badge--warning">{t('memory.list.revoked')}</span>
                         )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </section>
+                      </AssetItemName>
+                    </AssetItemHeader>
 
-          {/* Right: detail */}
-          <section className="_asset-memory-detail-column">
-            <div className="_asset-memory-detail-panel">
-              {!selected ? (
-                <div className="text-[12px] text-muted-foreground px-2 py-6">
-                  请在左侧选中一个记忆块查看详情。
-                </div>
-              ) : (
-                <BlockDetail
-                  block={selected}
-                  layer={layer}
-                  onLayerChange={setLayer}
-                  agentLabel={agentLabel}
-                  layerPage={layerPage}
-                  layerPageSize={pageSize}
-                  layerLoading={layerLoading}
-                  onLayerPageChange={handleLayerPageChange}
-                  onLayerItemLoad={handleLayerItemLoad}
-                  layerItemLoadingId={layerItemLoadingId}
-                />
-              )}
-            </div>
-          </section>
-        </div>
+                    <AssetItemBadges>
+                      {b.agent_id ? (
+                        <AssetBadge icon={<AppIcon size={10} />} title={t('memory.list.fixedTo', { id: b.agent_id })}>
+                          {agentLabel(b.agent_id)}
+                        </AssetBadge>
+                      ) : (
+                        <AssetBadge icon={<UsergroupIcon size={10} />} title={t('memory.list.teamPool')}>
+                          {t('memory.list.teamPoolShort')}
+                        </AssetBadge>
+                      )}
+                      {b.uploaded_by_user_id && (
+                        <AssetBadge icon={<UserIcon size={10} />}>
+                          @{b.uploaded_by_user_id}
+                          {b.uploaded_by_user_id === currentUserId && (
+                            <AssetBadgeYou>{t('common.you')}</AssetBadgeYou>
+                          )}
+                        </AssetBadge>
+                      )}
+                    </AssetItemBadges>
+
+                    <AssetItemMeta>
+                      <AssetItemTime>{new Date(b.updated_at_ms).toLocaleString()}</AssetItemTime>
+                    </AssetItemMeta>
+
+                    {scopeTab === 'fixed' && !isSelfChatMemory(b) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteBlock(b.id);
+                        }}
+                        title={t('memory.unbind.tooltip')}
+                        className="_memory-block-item-unbind"
+                      >
+                        {t('memory.unbind')}
+                      </button>
+                    )}
+                  </>
+                );
+              }}
+            />
+          }
+          detail={
+            !selected ? (
+              <div className="_alp-detail-empty">
+                {t('memory.detail.empty')}
+              </div>
+            ) : (
+              <BlockDetail
+                block={selected}
+                layer={layer}
+                onLayerChange={setLayer}
+                agentLabel={agentLabel}
+                layerPage={layerPage}
+                layerPageSize={pageSize}
+                layerLoading={layerLoading}
+                onLayerPageChange={handleLayerPageChange}
+                onLayerItemLoad={handleLayerItemLoad}
+                layerItemLoadingId={layerItemLoadingId}
+                onL0LoadMore={handleL0LoadMore}
+                l0MoreLoading={l0MoreLoading}
+              />
+            )
+          }
+        />
       )}
 
       {showImport && (
@@ -701,11 +676,11 @@ export default function ChatMemoryPanel(
           onAllocated={async (agentId) => {
             try {
               await chatMemoryApi.allocate(activeTeamId!, selected.id, agentId);
-              tea.notify.success('已分配到 Agent');
+              tea.notify.success(t('memory.notify.allocated'));
               setShowAllocate(false);
               fetchBlocks();
             } catch (e: any) {
-              tea.notify.error(e?.message || '分配失败');
+              tea.notify.error(e?.message || t('memory.notify.allocateFailed'));
             }
           }}
         />

@@ -11,6 +11,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { Button, Input, Modal } from 'tea-component';
+import { useTranslation } from 'react-i18next';
 import { ToolsIcon, CodeIcon, BooksIcon, ChatIcon } from 'tea-icons-react';
 import { type Agent as StoreAgent, invalidateBackendCache, writeAgentUiMeta } from '@/services';
 import { agentsApi, skillApi, chatMemoryApi } from '@/lib/teamApi';
@@ -52,6 +53,7 @@ export default function AgentEditDialog({
   const [realBindingsLoaded, setRealBindingsLoaded] = useState(false);
 
   const assets = useTeamAssets(agent.team_id);
+  const { t } = useTranslation();
 
   function injectBound<T extends { key: string; title: string; group: string; slug: string }>(
     pool: T[],
@@ -133,7 +135,7 @@ export default function AgentEditDialog({
     const nextRolePrompt = rolePrompt.trim();
     const nextRulesPrompt = rulesPrompt.trim();
     if (!nextName) {
-      tea.notify.error('Agent 名称不能为空。');
+      tea.notify.error(t('agentEdit.notify.nameRequired'));
       return;
     }
     setSavingPrompt(true);
@@ -149,10 +151,10 @@ export default function AgentEditDialog({
         }),
       });
       invalidateBackendCache();
-      tea.notify.success('Agent 信息已保存。');
+      tea.notify.success(t('agentEdit.notify.saved'));
       onClose();
     } catch (error) {
-      tea.notify.error(`保存 Agent 信息失败：${error instanceof Error ? error.message : String(error)}`);
+      tea.notify.error(t('agentEdit.notify.saveFailed', { msg: error instanceof Error ? error.message : String(error) }));
     } finally {
       setSavingPrompt(false);
     }
@@ -199,7 +201,7 @@ export default function AgentEditDialog({
       const msg = err instanceof Error ? err.message : String(err);
       // 只读模式下后端可能拒绝访问非自己的 agent 资产（NOT_YOUR_AGENT），这是预期行为。
       if (!/NOT_YOUR_AGENT/.test(msg)) {
-        tea.notify.error(`加载 Agent 资产绑定失败：${msg}`);
+        tea.notify.error(t('agentEdit.notify.loadAssetsFailed', { msg }));
       }
     });
 
@@ -207,30 +209,30 @@ export default function AgentEditDialog({
   }, [agent, assets.loading, realBindingsLoaded, selfChatMemoryId]);
 
   return (
-    <Modal visible caption="Agent 详情" size="l" onClose={onClose}>
+    <Modal visible caption={t('agentEdit.caption')} size="l" onClose={onClose}>
       <Modal.Body>
         <div className="_memory-form-stack">
           <div className="_memory-modal-description">{agent.agent_id}</div>
-        <LightField label="名称">
+        <LightField label={t('agentEdit.name')}>
           <Input size="full" value={name} onChange={setName} disabled={savingPrompt} />
         </LightField>
 
-        <LightField label="一句话描述">
+        <LightField label={t('agentEdit.descLabel')}>
           <Input.TextArea size="full" value={description} onChange={setDescription} rows={2} disabled={savingPrompt} />
         </LightField>
 
-        <LightField label="角色定位 prompt">
+        <LightField label={t('agentEdit.roleLabel')}>
           <Input.TextArea
             size="full"
             value={rolePrompt}
             onChange={setRolePrompt}
             rows={3}
             disabled={savingPrompt}
-            placeholder="描述这个 agent 扮演什么角色 / 职责定位..."
+            placeholder={t('agentEdit.rolePlaceholder')}
           />
         </LightField>
 
-        <LightField label="规则固定 prompt">
+        <LightField label={t('agentEdit.rulesLabel')}>
           <Input.TextArea
             size="full"
             value={rulesPrompt}
@@ -238,23 +240,23 @@ export default function AgentEditDialog({
             rows={4}
             disabled={savingPrompt}
             className="_memory-mono-textarea"
-            placeholder="为 Agent 设定行为规则提示词..."
+            placeholder={t('agentEdit.rulesPlaceholder')}
           />
         </LightField>
 
         <div className="_memory-asset-section">
           {assets.loading ? (
-            <div className="_memory-asset-loading">加载团队资产中…</div>
+            <div className="_memory-asset-loading">{t('agentEdit.assets.loading')}</div>
           ) : (
             <>
               <div className="_memory-asset-toolbar">
-                <span className="_memory-asset-toolbar-label">原子能力</span>
-                <span className="_memory-asset-toolbar-hint">只读 · 资源绑定请在创建或者对应资源管理页面修改设置</span>
+                <span className="_memory-asset-toolbar-label">{t('agentEdit.assets.label')}</span>
+                <span className="_memory-asset-toolbar-hint">{t('agentEdit.assets.hint')}</span>
               </div>
               <div className="_memory-collapse-group-stack">
                 <CollapseGroup
                   icon={<BooksIcon size={16} />}
-                  title="Wiki 知识库"
+                  title={t('settings.module.wiki')}
                   selectedCount={llmWikis.length}
                   totalCount={boundWikis.length}
                   open={wikiOpen}
@@ -270,7 +272,7 @@ export default function AgentEditDialog({
                 </CollapseGroup>
                 <CollapseGroup
                   icon={<CodeIcon size={16} />}
-                  title="Code_Graph"
+                  title={t('settings.module.code')}
                   selectedCount={codeGraphs.length}
                   totalCount={boundCodeGraphs.length}
                   open={codeGraphOpen}
@@ -286,7 +288,7 @@ export default function AgentEditDialog({
                 </CollapseGroup>
                 <CollapseGroup
                   icon={<ToolsIcon size={16} />}
-                  title="Skill 技能"
+                  title={t('settings.module.skill')}
                   selectedCount={skills.length}
                   totalCount={boundSkills.length}
                   open={skillsOpen}
@@ -302,7 +304,7 @@ export default function AgentEditDialog({
                 </CollapseGroup>
                 <CollapseGroup
                   icon={<ChatIcon size={16} />}
-                  title="Chat_Memory"
+                  title={t('settings.module.chatMemory')}
                   selectedCount={chatMemories.length}
                   totalCount={boundMemories.length}
                   open={memoryOpen}
@@ -323,9 +325,9 @@ export default function AgentEditDialog({
         </div>
       </Modal.Body>
       <Modal.Footer>
-        <Button onClick={onClose} disabled={savingPrompt}>取消</Button>
+        <Button onClick={onClose} disabled={savingPrompt}>{t('agentEdit.cancel')}</Button>
         <Button type="primary" onClick={() => void saveAgent()} disabled={!agentChanged || savingPrompt} loading={savingPrompt}>
-          保存修改
+          {t('agentEdit.save')}
         </Button>
       </Modal.Footer>
     </Modal>

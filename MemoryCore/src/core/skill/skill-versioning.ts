@@ -96,6 +96,23 @@ export class SkillVersioning {
 
   /**
    * 创建一个全新 skill 的 v1。head 不存在；调用方负责生成 skill_id。
+   *
+   * 跨系统"事务"编排（COS + skill DB + meta_assets）：
+   *
+   *   1. writeResource → COS               ← 最不可靠，先做；失败零 DB 副作用
+   *   2. store.appendVersion → skill DB    ← 失败：反向清 COS（cleanupVersionDir）
+   *   3. onSkillCreated → meta_assets      ← 失败：反向删 skill DB (deleteSkill) + 清 COS
+   *
+   * 为什么这个顺序：跨 3 个系统没有真事务，只能靠"顺序 + 补偿"。原则是
+   * **最容易失败的先做、失败零副作用的先做、可靠的收尾**。COS 是最脆的（网络/
+   * 认证/权限），skill DB 是本地事务几乎不会失败，asset 涉及 agent 查询/team
+   * 校验/多表写但也是本地 DB。原实现"asset 先写"违背了这个原则：曾出现过
+   * COS 认证挂 → skill 没落库 → asset 表却已经有一行的孤儿状态。
+   *
+   * 极端情况（步骤 2/3 rollback 又失败）：
+   *   - 孤儿 skill（skill 落库但 asset 缺）由 `onSkillAccessed` 读时自愈补登记，
+   *     用户下次 get/readFile 就会补上。闭环存在。
+   *   - 孤儿 COS 文件只占空间，读路径全部过 DB，永远不会被误读到。
    */
   async createNewSkill(
     skillId: string,
@@ -106,28 +123,12 @@ export class SkillVersioning {
     const newVersion = 1;
     const storageDir = this.resources.versionDir(skillId, newVersion);
 
-    // 0. 前置：v1 首创时同步登记资产（钩子必须 await）。
-    //    放在 storage / DB 之前，任何失败都直接中断 create，
-    //    避免出现「skill 已落库但 asset 不存在」这一前端管控页不可见的严重状态。
-    //    孤儿 asset（asset 存在但 skill 未落库）是可自愈的：下次同 skill_id
-    //    重试会命中上层 ensureSkillAsset 的幂等短路，无副作用。
-    if (this.onSkillCreated) {
-      await this.onSkillCreated({
-        skill_id: skillId,
-        team_id: ctx.team_id,
-        agent_id: ctx.agent_id,
-        user_id: ctx.user_id,
-        name: mut.name,
-        description: mut.description,
-      });
-    }
-
-    // 整 skill 总大小聚合校验（设计 §3.5.1：≤ 50MB）。
+    // 整 skill 总大小聚合校验（设计 §3.5.1：≤ 50MB）—— 纯计算，零副作用。
     if (mut.resourcesToWrite && mut.resourcesToWrite.length > 0) {
       this.resources.assertTotalSize([], mut.resourcesToWrite, []);
     }
 
-    // 先落 storage（如果有资源），失败 → 不写 DB
+    // ── Step 1: 写 COS（最脆的一步先做，失败零副作用）─────────────────────
     let manifest: SkillManifestEntry[] = [];
     if (mut.resourcesToWrite && mut.resourcesToWrite.length > 0) {
       try {
@@ -136,14 +137,16 @@ export class SkillVersioning {
           manifest.push(entry);
         }
       } catch (e) {
-        // best-effort 清理
+        // 部分文件可能已写，best-effort 清理整个版本目录
         await this.cleanupVersionDir(storageDir).catch(() => { /* ignore */ });
         throw e;
       }
     }
 
+    // ── Step 2: 写 skill DB（本地事务，几乎不会失败；失败反向清 COS）────
+    let row: Skill;
     try {
-      const row = await this.store.appendVersion({
+      row = await this.store.appendVersion({
         user_id: ctx.user_id,
         team_id: ctx.team_id,
         agent_id: ctx.agent_id,
@@ -158,13 +161,47 @@ export class SkillVersioning {
         owner_agent_id: ownerAgentId,
         metadata_json: mut.metadata_json,
       });
-      this.onSkillVdbChanged?.(1);
-      return row;
     } catch (e) {
-      // DB 写失败 → 清理刚刚创建的 storage 目录
       await this.cleanupVersionDir(storageDir).catch(() => { /* ignore */ });
       throw e;
     }
+
+    // ── Step 3: 登记 meta_assets（agent/team 校验 + createAsset + bind）──
+    //  失败 → 反向删 skill DB (deleteSkill) → 反向清 COS → 抛回业务错误。
+    //  onSkillCreated 未注入（如 tdai-core 未挂钩子）→ 直接跳过。
+    if (this.onSkillCreated) {
+      try {
+        await this.onSkillCreated({
+          skill_id: skillId,
+          team_id: ctx.team_id,
+          agent_id: ctx.agent_id,
+          user_id: ctx.user_id,
+          name: mut.name,
+          description: mut.description,
+        });
+      } catch (assetErr) {
+        // 反向删 skill DB。deleteSkill 本身也可能失败（DB 挂了），
+        // 但概率极低；即便失败，onSkillAccessed 读时自愈能收敛孤儿 skill。
+        // reportVdbDelta=false：+1 从未上报过（步骤 3 之后才上报），rollback
+        // 若上报 -1 会让 shark 记账出现负偏差。
+        try {
+          await this.deleteSkill(skillId, ctx.team_id, { reportVdbDelta: false });
+        } catch (rollbackErr) {
+          this.logger?.error(
+            `[skill-tx] rollback deleteSkill failed for ${skillId} (team=${ctx.team_id ?? "-"}): ` +
+              (rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)),
+          );
+        }
+        // COS 目录 deleteSkill 内部已清（listVersions → rmdir），这里不重复。
+        // 但如果 deleteSkill 因 DB 挂掉没跑到 storage 清理，兜底再清一次。
+        await this.cleanupVersionDir(storageDir).catch(() => { /* ignore */ });
+        throw assetErr;
+      }
+    }
+
+    // 所有系统写入均成功 → 上报 VDB delta
+    this.onSkillVdbChanged?.(1);
+    return row;
   }
 
   /**
@@ -293,8 +330,22 @@ export class SkillVersioning {
    * 权限校验（team_id / owner / expected_version）由调用方 SkillCore.delete
    * 完成。本方法不做业务规则校验，只按 (skill_id, team_id) 做物理清理。
    */
-  async deleteSkill(skillId: string, teamId?: string): Promise<number> {
-    // 1. 先拉全量版本元信息（拿 storage_dir）。listVersions 上限 1000，
+  async deleteSkill(
+    skillId: string,
+    teamId?: string,
+    opts?: {
+      /**
+       * 是否上报 VDB delta。默认 true（正常删除路径）。
+       * createNewSkill 的 rollback 路径应传 false —— 因为对应的 +1 从未上报过
+       * （+1 只在整个 create 三步全绿之后才发），rollback 里再上报 -N 会让
+       * shark 记账出现负偏差。
+       */
+      reportVdbDelta?: boolean;
+    },
+  ): Promise<number> {
+    const reportDelta = opts?.reportVdbDelta ?? true;
+
+    // 1. 先拉全量版本元信息（拿 storage_dir）。listVersions 上限 1000,
     //    单 skill 版本数在 TTL 保护 + 业务上限下远小于此值。
     const versions = await this.store.listVersions(skillId, teamId, { limit: 1000, offset: 0 });
 
@@ -316,8 +367,10 @@ export class SkillVersioning {
       }
     }
 
-    // 4. 一次性上报 shark（-N）
-    this.onSkillVdbChanged?.(-deleted);
+    // 4. 一次性上报 shark（-N）；rollback 路径下不上报（见 opts 注释）
+    if (reportDelta) {
+      this.onSkillVdbChanged?.(-deleted);
+    }
 
     return deleted;
   }

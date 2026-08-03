@@ -1,7 +1,5 @@
 /**
  * TeamManagementPanel 样式补丁 — 版式、间距，颜色统一走 Tea Design Token。
- * 仅「Agent 头像分类色」（_memory-accent-*）为分类装饰色，Tea 语义色板不含该类
- * 非语义的分类色，做法与团队头像取色（utils/color.ts）保持一致。
  */
 
 ._memory-team-mgmt {
@@ -894,26 +892,6 @@
   color: var(--tea-color-text-tertiary);
 }
 
-/* =====  Agent 头像分类色（装饰色，映射到 Tea 语义 lighten Token，随主题响应） ===== */
-._memory-accent-blue {
-  background: var(--tea-color-bg-brand-lighten-default);
-}
-._memory-accent-purple {
-  background: var(--tea-color-bg-brand-lighten-default);
-}
-._memory-accent-orange {
-  background: var(--tea-color-bg-warning-lighten-default);
-}
-._memory-accent-emerald {
-  background: var(--tea-color-bg-success-lighten-default);
-}
-._memory-accent-rose {
-  background: var(--tea-color-bg-error-lighten-default);
-}
-._memory-accent-slate {
-  background: var(--tea-color-bg-secondary-default);
-}
-
 /* ===== Agents 管理页：与 Memory项目的 Tea Card / ActionPanel 版式对齐 ===== */
 ._memory-agents-panel {
   border: 1px solid var(--tea-color-border-primary-default);
@@ -950,6 +928,15 @@
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Agent 列表工具栏内的 SearchBox：英文 placeholder（"Search agent name / description / ID"）
+   较长，tea 默认宽度在窄容器中会被截断。给一个最小宽度确保完整显示。
+   tea-component 实际类名：外层 .tea-form--search、内层 .tea-search。 */
+._memory-agents-toolbar .tea-form--search,
+._memory-agents-toolbar .tea-search {
+  min-width: 280px;
+  max-width: 100%;
 }
 
 ._memory-agents-empty {
@@ -1011,17 +998,6 @@
   cursor: default;
 }
 
-._memory-agents-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  border-radius: 4px;
-  font-size: 14px;
-}
-
 ._memory-agents-name {
   overflow: hidden;
   flex: 1 1 auto;
@@ -1079,6 +1055,25 @@
   color: var(--tea-color-text-tertiary);
 }
 
+/* Owner 标签：简洁 pill，与 Memory 详情徽章同一风格（浅色底 + 同色文字） */
+._memory-agents-owner-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--tea-color-text-secondary);
+  background-color: var(--tea-color-bg-secondary-default);
+  white-space: nowrap;
+}
+
+._memory-agents-owner-tag--me {
+  color: var(--tea-color-text-brand-default);
+  background-color: var(--tea-color-bg-brand-lighten-default);
+  font-weight: 500;
+}
+
 ._memory-agents-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1105,7 +1100,49 @@
     width: 100%;
   }
 
-  ._memory-agents-toolbar .tea-searchbox {
+  ._memory-agents-toolbar .tea-form--search,
+  ._memory-agents-toolbar .tea-search {
     flex: 1 1 180px;
   }
+}
+
+/* Agent 卡片骨架屏（首屏加载时展示 4 个占位卡）
+   风格与 AssetListPanel 的 _alp-skeleton 一致：浅灰底 + shimmer 横扫动画 */
+._memory-agents-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+._memory-agents-skeleton-card {
+  border: 1px solid var(--tea-color-border, #e7e7e7);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--tea-color-bg-container, #fff);
+}
+
+._memory-agents-skeleton-line {
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--tea-color-bg-secondary, #f5f5f5) 0%,
+    var(--tea-color-bg-tertiary, #ececec) 50%,
+    var(--tea-color-bg-secondary, #f5f5f5) 100%
+  );
+  background-size: 200% 100%;
+  animation: _memory-agents-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+._memory-agents-skeleton-line--name { width: 40%; height: 16px; }
+._memory-agents-skeleton-line--id   { width: 60%; }
+._memory-agents-skeleton-line--desc { width: 80%; }
+._memory-agents-skeleton-line--meta { width: 50%; }
+
+@keyframes _memory-agents-skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }

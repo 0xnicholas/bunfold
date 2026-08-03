@@ -35,10 +35,13 @@
 }
 
 /* 工具栏 SearchBox 最小宽度，避免 placeholder 文字被截断。
-   沿用团队管理面板的 `.tea-searchbox` 写法，与 Justify right 配合时优先压缩其他控件。 */
-._asset-code-toolbar .tea-searchbox {
-  flex: 1 1 200px;
-  min-width: 200px;
+   英文 "Search name / branch / ID"（24 字符）约需 220px，加上图标/边距给 240px。
+   实际类名是 .tea-form--search / .tea-search（旧版 .tea-searchbox 是错的）。 */
+._asset-code-toolbar .tea-form--search,
+._asset-code-toolbar .tea-search {
+  flex: 1 1 240px;
+  min-width: 240px;
+  max-width: 100%;
 }
 
 ._asset-code-empty {
