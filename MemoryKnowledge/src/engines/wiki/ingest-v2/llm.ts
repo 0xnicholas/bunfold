@@ -38,6 +38,12 @@ export interface RawLlmConfig {
    * 完整文本"的兼容层。
    */
   stream?: boolean;
+  /**
+   * VENDOR PATCH P5: 成本归属身份。wiki 链无 agent 概念,x-tc-agent 槽位承载
+   * team 域(见 PATCHES.md)。缺失时 createLlmClient fail-closed。
+   */
+  instanceId?: string;
+  agentId?: string;
 }
 
 /** 归一化后的配置。 */
@@ -49,6 +55,8 @@ export interface NormalizedLlmConfig {
   maxTokens: number;
   timeoutMs: number;
   stream: boolean;
+  instanceId: string;
+  agentId: string;
 }
 
 const DEFAULT_MODEL = "Memory-Model";
@@ -71,7 +79,9 @@ export function normalizeLlmConfig(raw: RawLlmConfig | undefined): NormalizedLlm
   const maxTokens = cfg.maxTokens ?? cfg.maxContextSize ?? DEFAULT_MAX_TOKENS;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const stream = cfg.stream ?? false;
-  return { protocol, baseUrl, apiKey, model, maxTokens, timeoutMs, stream };
+  const instanceId = cfg.instanceId || "";
+  const agentId = cfg.agentId || "";
+  return { protocol, baseUrl, apiKey, model, maxTokens, timeoutMs, stream, instanceId, agentId };
 }
 
 export interface ChatParams {
@@ -110,11 +120,28 @@ export function createLlmClient(raw: RawLlmConfig | undefined): LlmClient {
       "或设 LLM_MODE=custom + LLM_BASE_URL 走自带端点",
     );
   }
+  // VENDOR PATCH P5: fail-closed — 归属头缺失时拒绝发起任何未归属请求。
+  if (!config.instanceId) {
+    throw new Error(
+      "LLM attribution 缺失：x-tc-instance 未解析（需上层传入 instanceId=service_id），" +
+      "拒绝发起未归属请求",
+    );
+  }
+  if (!config.agentId) {
+    throw new Error(
+      "LLM attribution 缺失：x-tc-agent 未解析（wiki 链该槽位承载 team 域），" +
+      "拒绝发起未归属请求",
+    );
+  }
 
   // 按 protocol 选 AI SDK provider 工厂（两者都实现 LanguageModelV3 接口）。
+  const attributionHeaders = {
+    "x-tc-instance": config.instanceId,
+    "x-tc-agent": config.agentId,
+  };
   const provider = config.protocol === "anthropic"
-    ? createAnthropic({ baseURL: config.baseUrl, apiKey: config.apiKey })
-    : createOpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey });
+    ? createAnthropic({ baseURL: config.baseUrl, apiKey: config.apiKey, headers: attributionHeaders })
+    : createOpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, headers: attributionHeaders });
 
   return {
     config,

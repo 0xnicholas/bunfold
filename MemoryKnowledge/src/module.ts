@@ -193,6 +193,9 @@ export function createKnowledgeModule(config: KnowledgeModuleConfig): KnowledgeM
         maxContextSize: effectiveLlm.maxTokens,
         timeoutMs: effectiveLlm.timeoutMs,
         stream: effectiveLlm.stream ?? false,
+        // VENDOR PATCH P5: 成本归属。wiki 链无 agent 概念,x-tc-agent 槽位承载 team 域。
+        instanceId: serviceId,
+        agentId: teamId,
       },
       { onProgress, globalLlmLimit },
     );

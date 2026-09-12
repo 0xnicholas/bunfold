@@ -136,6 +136,7 @@ export async function generateWikiSummary(
   name: string,
   pages: Array<{ title: string; description?: string }>,
   llm: LlmConfig,
+  attribution?: { instanceId?: string; agentId?: string },
 ): Promise<string> {
   if (pages.length === 0) {
     console.warn(`${TAG} wiki summary skipped: no pages for ${wikiId}`);
@@ -155,7 +156,7 @@ ${pageList}`;
 
   console.info(`${TAG} wiki summary LLM call start for ${wikiId} (model=${llm.model}, protocol=${llm.protocol}, pages=${pages.length})`);
   try {
-    const client = createLlmClient(llm);
+    const client = createLlmClient({ ...llm, ...attribution });
     const text = await client.chat({
       system: "你是一个知识库摘要生成器。只输出摘要文本，不要输出其他内容。",
       prompt,
