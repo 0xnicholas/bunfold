@@ -27,6 +27,12 @@ jobs:
         with:
           node-version: "22"
 
+      # node 22 自带的 npm 10 在无 lockfile 全量解析本仓依赖树时触发 arborist
+      # "edgesOut" 崩溃(npm/cli 已知 bug);npm 11 已修复。本仓 .gitignore 不收
+      # lockfile,故在 CI 里显式升级 npm 后再 install。
+      - name: Upgrade npm (work around npm 10 arborist edgesOut crash)
+        run: npm install -g npm@11
+
       - name: Cache node_modules
         uses: actions/cache@v4
         id: cache-deps
@@ -53,6 +59,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      # 同 MemoryCore job:npm 10 arborist 崩溃绕过。
+      - name: Upgrade npm (work around npm 10 arborist edgesOut crash)
+        run: npm install -g npm@11
 
       - name: Cache node_modules
         uses: actions/cache@v4
