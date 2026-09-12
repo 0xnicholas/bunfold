@@ -660,6 +660,41 @@ export function createL1Runner(opts: {
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,
       );
 
+      // VENDOR PATCH P1 (tokencamp fork — see PATCHES.md): zero-raw-text.
+      // Physically delete the consumed L0 rows once the extraction cursor is
+      // durably persisted. Ordering rationale: cursor-first means a crash
+      // before this point only re-distills (rows intact, cursor unmoved); the
+      // delete runs on every successful completion, so consumed raw text does
+      // not outlive its distillation window. Deletion is exact (per consumed
+      // row id, never cursor-range) so rows the run did NOT process — the
+      // over-fetch tail, or rows a newer concurrent cursor may cover — are
+      // never removed. Best-effort per row: a failed delete is logged, not
+      // fatal, and the cursor is never rolled back. DB path only: the JSONL
+      // fallback runs precisely when the store is degraded, i.e. there is no
+      // store-side row to delete.
+      if (vectorStore && !vectorStore.isDegraded() && processed.length > 0) {
+        let l0Deleted = 0;
+        let l0DeleteFailed = 0;
+        for (const m of processed) {
+          try {
+            if (await vectorStore.deleteL0(m.id)) {
+              l0Deleted++;
+            } else {
+              l0DeleteFailed++;
+            }
+          } catch (err) {
+            l0DeleteFailed++;
+            logger.warn(
+              `${TAG} [l1] L0 delete failed for record ${m.id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        logger.info(
+          `${TAG} [l1] Consumed L0 rows deleted: ${l0Deleted}/${processed.length}` +
+          (l0DeleteFailed > 0 ? ` (${l0DeleteFailed} FAILED — residue until a future run reprocesses)` : ""),
+        );
+      }
+
       return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog, profileScopes: Array.from(profileScopes) };
     } catch (err) {
       logger.error(`${TAG} [l1] L1 failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
