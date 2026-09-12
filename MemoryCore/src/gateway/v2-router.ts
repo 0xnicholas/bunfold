@@ -94,6 +94,7 @@ import {
 } from "./v2-schemas.js";
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-scope.js";
+import { readStandaloneJsonlMirrorEnabled } from "../utils/env-config.js";
 
 const TAG = "[tdai-gateway][v2]";
 const V2_PREFIX = "/v2";
@@ -778,7 +779,12 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   // log alongside SQLite. Service mode skips: COS is the authoritative store,
   // and writing to local FS in a multi-replica pod would be ephemeral + useless.
   // Failure is non-fatal: SQLite is the source of truth.
-  if (deps.deployMode === "standalone") {
+  //
+  // VENDOR PATCH P2 (tokencamp fork — see PATCHES.md): the mirror is gated
+  // behind `TDAI_STANDALONE_JSONL_MIRROR` and defaults to OFF — an append-only
+  // raw-text copy with no per-row deletion surface is incompatible with the
+  // zero-raw-text posture. Set the env var to restore upstream parity.
+  if (deps.deployMode === "standalone" && readStandaloneJsonlMirrorEnabled()) {
     const storage = deps.getStorage();
     if (storage) {
       try {
