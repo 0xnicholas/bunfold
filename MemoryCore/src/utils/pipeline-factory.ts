@@ -635,6 +635,19 @@ export function createL1Runner(opts: {
 
         totalExtracted += l1Result.extractedCount;
         totalStored += l1Result.storedCount;
+        // VENDOR PATCH P3 (composition — see PATCHES.md «P3»): a failed
+        // extraction (success === false ⇔ the LLM call raised, incl. the
+        // runner's attribution fail-closed) aborts the whole run BEFORE the
+        // cursor persists. With P1 deleting consumed rows, advancing the
+        // cursor past a failed batch would destroy raw text that was never
+        // distilled; aborting keeps rows for the scheduler's natural retry.
+        if (!l1Result.success) {
+          throw new Error(
+            `${TAG} [l1] extraction failed for sessionId=${group.sessionId || "(empty)"} ` +
+            `(agentId=${group.agentId}) — aborting run before cursor/delete so the batch is retried` +
+            (l1Result.errorMessage ? `: ${l1Result.errorMessage}` : ""),
+          );
+        }
         if (l1Result.storedCount > 0) {
           // L2/L3 output is team+agent scoped, but each L2 extraction input must
           // stay bounded to the source session that just produced L1. Encode the

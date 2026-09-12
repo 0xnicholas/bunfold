@@ -74,6 +74,12 @@ export interface L1ExtractionResult {
   sceneNames: string[];
   /** Last scene name (for continuity in next extraction) */
   lastSceneName?: string;
+  /**
+   * VENDOR PATCH P3: underlying LLM error message when `success === false`.
+   * Lets the pipeline abort with the real cause (e.g. the runner's
+   * attribution fail-closed) instead of an opaque failure.
+   */
+  errorMessage?: string;
 }
 
 // ============================
@@ -203,6 +209,7 @@ export async function extractL1Memories(params: {
       promptMode: options.promptMode,
       memoryPrompt: options.memoryPrompt,
       traceContext: { teamId, userId, agentId, sessionId },
+      instanceId: metricInstanceId,
       llmRunner: options.llmRunner,
     });
     scenes = outcome.scenes;
@@ -213,7 +220,7 @@ export async function extractL1Memories(params: {
     logger?.warn?.(
       `${TAG} l1-empty reason=llm_error sessionKey=${sessionKey} msg=${err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)}`,
     );
-    return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
+    return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [], errorMessage: err instanceof Error ? err.message : String(err) };
   }
 
   // Flatten all memories across scenes
@@ -320,6 +327,7 @@ export async function extractL1Memories(params: {
         embeddingTimeoutMs: options.embeddingTimeoutMs,
         llmRunner: options.llmRunner,
         traceContext: { teamId, userId, agentId, sessionId },
+        instanceId: metricInstanceId,
         ...(teamId || userId || agentId || sessionId || taskId ? { filter: { teamId, userId, agentId, sessionId, taskId } } : {}),
       });
       dedupLatencyMs = Date.now() - dedupStartMs;
@@ -488,8 +496,10 @@ async function callLlmExtraction(params: {
   llmRunner?: LLMRunner;
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
+  /** VENDOR PATCH P3: instance ID forwarded to the runner for cost attribution. */
+  instanceId?: string;
 }): Promise<ParseExtractionOutcome> {
-  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, instanceId } = params;
 
   const systemPrompt = composeMemorySystemPrompt(getExtractMemoriesSystemPrompt(promptMode), memoryPrompt);
   const userPrompt = formatExtractionPrompt({
@@ -516,6 +526,9 @@ async function callLlmExtraction(params: {
       systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
+      // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
+      instanceId,
+      agentId: traceContext?.agentId,
       ...traceParams,
     });
   } else {

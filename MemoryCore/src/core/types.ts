@@ -105,6 +105,14 @@ export interface LLMRunParams {
   /** Plugin instance ID for metric reporting (optional). */
   instanceId?: string;
   /**
+   * VENDOR PATCH P3 (tokencamp fork — see PATCHES.md): agent ID used for
+   * cost attribution. Together with `instanceId` it is sent as the
+   * `x-tc-instance` / `x-tc-agent` headers on every outbound LLM call made by
+   * the standalone runner; the runner fails closed (throws before any
+   * request) when either is unresolved.
+   */
+  agentId?: string;
+  /**
    * H-11 Step 2: external abort signal (in addition to the internal timeout).
    * When this aborts (e.g. pipeline-worker lost its lock), the LLM call
    * tears down immediately to save tokens and avoid late writes.
