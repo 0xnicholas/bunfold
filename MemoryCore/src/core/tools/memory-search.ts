@@ -11,7 +11,7 @@
  */
 
 import type { IMemoryStore, IsolationFilter, L1SearchResult } from "../store/types.js";
-import { hasClientEmbedding, type EmbeddingService } from "../store/embedding.js";
+import { hasClientEmbedding, type EmbeddingCallOptions, type EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { recallL1Candidates } from "./l1-candidate-recall.js";
 
@@ -84,6 +84,8 @@ export async function executeMemorySearch(params: {
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
+  /** VENDOR PATCH P4: cost-attribution identity for the query embed call. */
+  embeddingCallOpts?: EmbeddingCallOptions;
 }): Promise<MemorySearchResult> {
   const {
     query,
@@ -94,6 +96,7 @@ export async function executeMemorySearch(params: {
     vectorStore,
     embeddingService,
     logger,
+    embeddingCallOpts,
   } = params;
 
   logger?.debug?.(
@@ -140,6 +143,7 @@ export async function executeMemorySearch(params: {
     logger,
     filter: isolationFilter,
     logTag: TAG,
+    embeddingCallOpts,
   });
 
   let results = recalled.hits.map(toSearchItem);

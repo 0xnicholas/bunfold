@@ -753,7 +753,8 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
     for (const record of acceptedRecords) {
       let emb: Float32Array | undefined;
       if (embedding) {
-        try { emb = await embedding.embed(record.messageText); } catch (e) { console.warn(`[v2-router] L0 embedding failed:`, e); }
+        // VENDOR PATCH P4: cost-attribution identity for the embed callback.
+        try { emb = await embedding.embed(record.messageText, { instanceId: auth.serviceId, agentId: iso?.agentId }); } catch (e) { console.warn(`[v2-router] L0 embedding failed:`, e); }
       }
       await store.upsertL0(record, emb);
     }
@@ -955,6 +956,8 @@ async function handleConversationSearch(body: unknown, auth: V2AuthContext, requ
     vectorStore: deps.getStore(),
     embeddingService: deps.getEmbedding(),
     logger: deps.logger,
+    // VENDOR PATCH P4: cost-attribution identity for the query embed call.
+    embeddingCallOpts: { instanceId: auth.serviceId, agentId: iso?.agentId },
   });
   const recallLatencyMs = performance.now() - tStart;
 
@@ -1110,7 +1113,8 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
 
   const embedding = deps.getEmbedding();
   let emb: Float32Array | undefined;
-  if (embedding) { try { emb = await embedding.embed(content); } catch (e) { console.warn(`[v2-router] L1 embedding failed:`, e); } }
+  // VENDOR PATCH P4: cost-attribution identity for the embed callback.
+  if (embedding) { try { emb = await embedding.embed(content, { instanceId: auth.serviceId, agentId: updated.agentId ?? iso?.agentId }); } catch (e) { console.warn(`[v2-router] L1 embedding failed:`, e); } }
 
   await store.upsertL1(updated, emb);
 
@@ -1231,6 +1235,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     vectorStore: deps.getStore(),
     embeddingService: deps.getEmbedding(),
     logger: deps.logger,
+    // VENDOR PATCH P4: cost-attribution identity for the query embed call.
+    embeddingCallOpts: { instanceId: auth.serviceId, agentId: iso?.agentId },
   });
   const recallLatencyMs = performance.now() - tStart;
 

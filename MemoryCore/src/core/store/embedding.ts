@@ -66,6 +66,14 @@ export interface EmbeddingProviderInfo {
 export interface EmbeddingCallOptions {
   /** Override the default timeout for this call (milliseconds). */
   timeoutMs?: number;
+  /**
+   * VENDOR PATCH P4 (tokencamp fork — see PATCHES.md): cost-attribution
+   * identity. Sent as `x-tc-instance` / `x-tc-agent` headers on every remote
+   * embedding request; the service fails closed (throws before any request)
+   * when either is unresolved.
+   */
+  instanceId?: string;
+  agentId?: string;
 }
 
 export interface EmbeddingService {
@@ -496,13 +504,13 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       const results: Float32Array[] = [];
       for (let i = 0; i < processedTexts.length; i += MAX_BATCH_SIZE) {
         const chunk = processedTexts.slice(i, i + MAX_BATCH_SIZE);
-        const chunkResults = await this._callApi(chunk, options?.timeoutMs);
+        const chunkResults = await this._callApi(chunk, options);
         results.push(...chunkResults);
       }
       return results;
     }
 
-    return this._callApi(processedTexts, options?.timeoutMs);
+    return this._callApi(processedTexts, options);
   }
 
   /**
@@ -517,7 +525,20 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     return text.slice(0, this.maxInputChars);
   }
 
-  private async _callApi(texts: string[], timeoutOverride?: number): Promise<Float32Array[]> {
+  private async _callApi(texts: string[], options?: EmbeddingCallOptions): Promise<Float32Array[]> {
+    // VENDOR PATCH P4 (tokencamp fork — see PATCHES.md): every remote
+    // embedding request must carry cost-attribution headers. Fail closed
+    // BEFORE any request: an unattributed call is unbillable upstream.
+    const tcInstance = options?.instanceId?.trim();
+    const tcAgent = options?.agentId?.trim();
+    if (!tcInstance || !tcAgent) {
+      throw new Error(
+        `${TAG} Missing cost-attribution identity (` +
+        `x-tc-instance=${tcInstance || "(missing)"}, x-tc-agent=${tcAgent || "(missing)"}) — ` +
+        `refusing unattributed embedding call`,
+      );
+    }
+
     const body: Record<string, unknown> = {
       input: texts,
       model: this.model,
@@ -532,6 +553,8 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
+      "x-tc-instance": tcInstance,
+      "x-tc-agent": tcAgent,
     };
     if (useProxy) {
       headers["Remote-URL"] = `${this.baseUrl}/embeddings`;
@@ -545,7 +568,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutOverride ?? this.timeoutMs);
+        const timeoutId = setTimeout(() => controller.abort(), options?.timeoutMs ?? this.timeoutMs);
 
         try {
           const resp = await fetch(fetchUrl, {

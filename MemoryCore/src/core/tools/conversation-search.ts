@@ -12,7 +12,7 @@
 
 import type { IMemoryStore, IsolationFilter, L0SearchResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/tokenize.js";
-import { hasClientEmbedding, type EmbeddingService } from "../store/embedding.js";
+import { hasClientEmbedding, type EmbeddingCallOptions, type EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 
 // ============================
@@ -91,6 +91,8 @@ export async function executeConversationSearch(params: {
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
+  /** VENDOR PATCH P4: cost-attribution identity for the query embed call. */
+  embeddingCallOpts?: EmbeddingCallOptions;
 }): Promise<ConversationSearchResult> {
   const {
     query,
@@ -100,6 +102,7 @@ export async function executeConversationSearch(params: {
     vectorStore,
     embeddingService,
     logger,
+    embeddingCallOpts,
   } = params;
 
   logger?.debug?.(
@@ -209,7 +212,7 @@ export async function executeConversationSearch(params: {
       if (!hasEmbedding) return [];
       try {
         logger?.debug?.(`${TAG} [hybrid-vec] Generating query embedding...`);
-        const queryEmbedding = await embeddingService!.embed(query);
+        const queryEmbedding = await embeddingService!.embed(query, embeddingCallOpts);
         logger?.debug?.(
           `${TAG} [hybrid-vec] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
         );
