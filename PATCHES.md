@@ -13,6 +13,8 @@
    `MemoryCore/__tests__/vendor-invariants/` 或 `MemoryKnowledge/__tests__/vendor-invariants/`,
    由 fork CI(`.github/workflows/vendor-invariants.yml`)强制常绿。
 3. 改完必须更新本文件:落点(文件:行)、动机、不变量、测试位置、偏离声明。
+   将来新 patch 一律新开一章(如 `clearMemoryContent` userId handler —— 届时按其
+   语义归入合适的 patch 家族或独立编号),不得搭车进既有 commit。
 4. 与上游 follow 的新 backport 单独成章(见 «FTS5»),commit message 注明来源 commit。
 5. 禁止在 vendor 分支上做与台账无关的改动;升级基线走独立 rebase 流程,不走本台账。
 
@@ -27,6 +29,10 @@
   `deleteL0`。仅 DB 路径;best-effort(删失败只记日志,不影响主流程)。
 - **不变量**: 游标先落盘再删行(崩溃只重蒸馏,不丢未蒸馏行);按 id 删,
   未消费的尾部行绝不被删;`IMemoryStore.deleteL0` 是既有必选方法,**零 store 改动**。
+- **残留语义(诚实登记)**: 删除是 best-effort、无重试。某行 `deleteL0` 失败后,
+  后续 run 只取 `recorded_at_ms > 游标` 的行,**永远不会**重新捡到这行——残留是
+  永久的(带告警日志)。 reconcile(兜底清扫)属将来 patch;当前不变量只在
+  happy path 上保证「已消费原文物理不存在」。
 - **测试**: `MemoryCore/__tests__/vendor-invariants/l0-deletion-after-distill.test.ts`
 
 ## P2 — 关闭 standalone JSONL 原文镜像(单开关,默认关)
@@ -42,6 +48,9 @@
 - **不变量**: 默认不写任何 `conversations/*.jsonl`;置 env 即恢复上游行为(同一条开关)。
 - **对 ADR 落点的扩展声明(一)**: 设计落点原本只列 v2-router 一处;实现发现 v1
   recorder 存在**第二份同样语义的镜像**,同一开关一并管住(单一实现原则,不开第二个开关)。
+- **跨模式效应登记**: l0-recorder 的闸不看 deployMode——非 standalone 部署若走
+  v1 `/capture`,其 JSONL 镜像同样默认关闭(与零原文目标一致,但与开关名的
+  "standalone" 字面不完全对齐;恢复上游行为仍只需置该 env)。
 - **测试**: `MemoryCore/__tests__/vendor-invariants/standalone-jsonl-mirror.test.ts`
 
 ## P3 — standalone LLM chat 回调注入归属头,缺头 fail-closed
@@ -61,7 +70,7 @@
   `success: false`,而 pipeline-factory 原本不看 success。若不改,fail-closed(或 402)
   会导致游标越过未蒸馏行,再叠加 P1 删行 = **静默丢失原文**。因此新增组合规则:
   **`!l1Result.success` 即抛错,整个 L1 run abort 于游标推进与行删除之前**
-  (`pipeline-factory.ts:638`);`L1ExtractionResult` 加 `errorMessage?` 透出原因。
+  (`pipeline-factory.ts:644`);`L1ExtractionResult` 加 `errorMessage?` 透出原因。
 - **明确不改**: OpenClaw-host runner 路径(宿主自带 LLM,不经 standalone runner)。
 - **测试**: `MemoryCore/__tests__/vendor-invariants/llm-attribution-headers.test.ts`
 
@@ -86,6 +95,11 @@
   - `core/hooks/auto-capture.ts`(v1 路径,embed 错误已按条 catch)
   - `core/tdai-core.ts` 的 search 工具调用(OpenClaw 宿主路径,无 tokencamp 归属概念;
     embed 抛错被既有 catch 吞掉,降级 FTS)
+- **v2 网关降级路径登记**: 网关注头取 `agentId: iso?.agentId`;当请求未解析出
+  agent 维度(`requestIsolation` 缺失或不含 agentId)时,fail-closed 的抛错被
+  各站点的既有 catch 吞掉——L0 行照写但**不再生成向量**(检索降级 FTS-only),
+  embedding 静默停用,不发任何未归属请求。这是字母层面满足 fail-closed 的
+  既定取舍;tokencamp 侧所有 v2 调用均应带齐 isolation 维度,不会落入此路径。
 - **不变量**: 缺 `instanceId` 或 `agentId` 时 `embed`/`embedBatch` 在发请求前抛错;
   各生产路径(v2 网关 + L1 管道)发出的 embedding 请求必带两个头。
 - **测试**: `MemoryCore/__tests__/vendor-invariants/embedding-attribution-headers.test.ts`
