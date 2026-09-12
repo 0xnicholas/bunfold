@@ -122,7 +122,7 @@ export async function batchDedup(params: {
   // (vectorCapable=false) or a Noop embedding service degrades to the FTS leg
   // inside the shared helper; vector failures are non-fatal there.
   logger?.debug?.(`${TAG} Using hybrid candidate recall (topK=${topK})`);
-  const matches = await findCandidates(memories, vectorStore!, vectorCapable ? embeddingService : undefined, topK, logger, params.embeddingTimeoutMs, filter, hasVectorData);
+  const matches = await findCandidates(memories, vectorStore!, vectorCapable ? embeddingService : undefined, topK, logger, params.embeddingTimeoutMs, filter, hasVectorData, instanceId, traceContext);
 
   // Check if any memory has candidates
   const hasAnyCandidates = matches.some((m) => m.candidates.length > 0);
@@ -242,6 +242,8 @@ async function findCandidates(
   embeddingTimeoutMs: number | undefined,
   filter: IsolationFilter | undefined,
   hasVectorData: boolean,
+  instanceId: string | undefined,
+  traceContext: TraceContext | undefined,
 ): Promise<CandidateMatch[]> {
   const newRecordIds = new Set(memories.map((m) => m.record_id));
   const nativeHybrid = !!(
@@ -257,7 +259,8 @@ async function findCandidates(
       try {
         queryEmbeddings = await embeddingService.embedBatch(
           memories.map((m) => m.content),
-          embeddingTimeoutMs ? { timeoutMs: embeddingTimeoutMs } : undefined,
+          // VENDOR PATCH P4: cost-attribution identity (service fails closed if absent).
+          { ...(embeddingTimeoutMs ? { timeoutMs: embeddingTimeoutMs } : {}), instanceId, agentId: traceContext?.agentId },
         );
       } catch (err) {
         logger?.warn?.(
@@ -285,6 +288,8 @@ async function findCandidates(
       queryEmbedding: queryEmbeddings?.[i],
       embeddingTimeoutMs,
       logTag: TAG,
+      // VENDOR PATCH P4: cost-attribution identity for fallback per-memory embeds.
+      embeddingCallOpts: { instanceId, agentId: traceContext?.agentId },
     });
 
     const candidates: MemoryRecord[] = recalled.hits

@@ -11,7 +11,7 @@
 
 import type { IMemoryStore, IsolationFilter, L1FtsResult, L1SearchResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/tokenize.js";
-import { hasClientEmbedding, type EmbeddingService } from "../store/embedding.js";
+import { hasClientEmbedding, type EmbeddingCallOptions, type EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 
 const DEFAULT_TAG = "[memory-tdai][l1-candidate-recall]";
@@ -31,6 +31,8 @@ export interface RecallL1CandidatesParams {
   /** Precomputed query vector; skips embed() on the client-vector path. */
   queryEmbedding?: Float32Array;
   embeddingTimeoutMs?: number;
+  /** VENDOR PATCH P4: cost-attribution identity merged into client-side embed calls. */
+  embeddingCallOpts?: EmbeddingCallOptions;
   /** Log prefix so search/dedup keep their existing tag in logs. */
   logTag?: string;
 }
@@ -52,6 +54,7 @@ export async function recallL1Candidates(
     filter,
     queryEmbedding,
     embeddingTimeoutMs,
+    embeddingCallOpts,
   } = params;
   const tag = params.logTag ?? DEFAULT_TAG;
 
@@ -84,6 +87,7 @@ export async function recallL1Candidates(
       filter,
       queryEmbedding,
       embeddingTimeoutMs,
+      embeddingCallOpts,
       logger,
       tag,
     ),
@@ -203,6 +207,7 @@ async function recallVector(
   filter: IsolationFilter | undefined,
   queryEmbedding: Float32Array | undefined,
   embeddingTimeoutMs: number | undefined,
+  embeddingCallOpts: EmbeddingCallOptions | undefined,
   logger: Logger | undefined,
   tag: string,
 ): Promise<L1SearchResult[]> {
@@ -213,9 +218,10 @@ async function recallVector(
     let vec = queryEmbedding && queryEmbedding.length > 0 ? queryEmbedding : undefined;
     if (!vec) {
       logger?.debug?.(`${tag} [hybrid-vec] Generating query embedding...`);
-      vec = embeddingTimeoutMs != null
-        ? await embeddingService!.embed(query, { timeoutMs: embeddingTimeoutMs })
-        : await embeddingService!.embed(query);
+      vec = await embeddingService!.embed(query, {
+        ...(embeddingTimeoutMs != null ? { timeoutMs: embeddingTimeoutMs } : {}),
+        ...embeddingCallOpts,
+      });
     }
     if (!vec || vec.length === 0) {
       logger?.debug?.(`${tag} [hybrid-vec] Empty query embedding, skipping vector path`);

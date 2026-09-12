@@ -178,8 +178,10 @@ export async function writeMemory(params: {
   embeddingService?: EmbeddingService;
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
+  /** VENDOR PATCH P4: instance ID forwarded to the dual-write embed call for cost attribution. */
+  instanceId?: string;
 }): Promise<MemoryRecord | null> {
-  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage } = params;
+  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, instanceId } = params;
 
   if (decision.action === "skip") {
     logger?.debug?.(`${TAG} Skipping memory: ${memory.content.slice(0, 50)}...`);
@@ -321,7 +323,7 @@ export async function writeMemory(params: {
 
       if (embeddingService) {
         try {
-          embedding = await embeddingService.embed(record.content);
+          embedding = await embeddingService.embed(record.content, { instanceId, agentId });
           logger?.debug?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
             `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
