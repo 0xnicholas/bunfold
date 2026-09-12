@@ -1101,6 +1101,8 @@ export class WikiService {
           row.name,
           pages.map((p) => ({ title: p.title, description: p.description })),
           this.callbackConfig.resolveLlm(row.service_id),
+          // VENDOR PATCH P5: 成本归属(x-tc-agent 槽位承载 team 域)。
+          { instanceId: row.service_id, agentId: row.team_id },
         );
         this.logger?.info?.(`[wiki] summary generation done (wikiId=${row.wiki_id}, len=${summary?.length ?? 0}, empty=${!summary})`);
         if (summary) {
