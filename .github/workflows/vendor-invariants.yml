@@ -1,0 +1,69 @@
+name: Vendor Invariants
+
+# tokencamp vendor 分支(见 PATCHES.md):每个 vendor patch 的不变量测试必须常绿。
+# 与 pr-ci.yml 相互独立——本工作流只跑 __tests__/vendor-invariants,不动既有 CI。
+
+on:
+  push:
+    branches: [vendor]
+  pull_request:
+    branches: [vendor]
+
+concurrency:
+  group: vendor-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  memory-core:
+    name: MemoryCore vendor invariants
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: MemoryCore
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-deps
+        with:
+          path: MemoryCore/node_modules
+          key: vendor-deps-core-${{ runner.os }}-${{ hashFiles('MemoryCore/package.json') }}
+
+      - name: npm install
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: npm install --ignore-scripts
+
+      - name: Run vendor invariant tests
+        run: npx vitest run __tests__/vendor-invariants
+
+  memory-knowledge:
+    name: MemoryKnowledge vendor invariants
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: MemoryKnowledge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-deps
+        with:
+          path: MemoryKnowledge/node_modules
+          key: vendor-deps-knowledge-${{ runner.os }}-${{ hashFiles('MemoryKnowledge/package.json') }}
+
+      - name: npm install
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: npm install --ignore-scripts
+
+      - name: Run vendor invariant tests
+        run: npx vitest run
