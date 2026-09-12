@@ -16,6 +16,7 @@
 
 import crypto from "node:crypto";
 import { sanitizeText, stripCodeBlocks, shouldCaptureL0 } from "../../utils/sanitize.js";
+import { readStandaloneJsonlMirrorEnabled } from "../../utils/env-config.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
@@ -272,6 +273,12 @@ export async function recordConversation(params: {
   }
 
   // Step 4: Write to JSONL file — one message per line (flat format)
+  //
+  // VENDOR PATCH P2 (tokencamp fork — see PATCHES.md): this JSONL mirror is
+  // gated behind `TDAI_STANDALONE_JSONL_MIRROR` and defaults to OFF — an
+  // append-only raw-text copy with no per-row deletion surface is
+  // incompatible with the zero-raw-text posture. The filtered messages are
+  // returned to the caller regardless, so L1 processing is unaffected.
   const now = new Date().toISOString();
   const lines: string[] = [];
   for (const msg of filtered) {
@@ -293,21 +300,23 @@ export async function recordConversation(params: {
   const shardDate = formatLocalDate(new Date());
   const recordKey = StoragePaths.conversation(shardDate);
 
-  try {
-    if (storage) {
-      await storage.appendFile(recordKey, lines.join("\n") + "\n");
-    } else {
-      const fs = await import("node:fs/promises");
-      const path = await import("node:path");
-      const outDir = path.default.join(baseDir, "conversations");
-      const outPath = path.default.join(outDir, `${shardDate}.jsonl`);
-      await fs.default.mkdir(outDir, { recursive: true });
-      await fs.default.appendFile(outPath, lines.join("\n") + "\n", "utf-8");
+  if (readStandaloneJsonlMirrorEnabled()) {
+    try {
+      if (storage) {
+        await storage.appendFile(recordKey, lines.join("\n") + "\n");
+      } else {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const outDir = path.default.join(baseDir, "conversations");
+        const outPath = path.default.join(outDir, `${shardDate}.jsonl`);
+        await fs.default.mkdir(outDir, { recursive: true });
+        await fs.default.appendFile(outPath, lines.join("\n") + "\n", "utf-8");
+      }
+      logger?.debug?.(`${TAG} Recorded ${filtered.length} messages to ${recordKey}`);
+    } catch (err) {
+      logger?.error(`${TAG} Failed to write L0 file: ${err instanceof Error ? err.message : String(err)}`);
+      // Return filtered messages anyway so L1 can still process them
     }
-    logger?.debug?.(`${TAG} Recorded ${filtered.length} messages to ${recordKey}`);
-  } catch (err) {
-    logger?.error(`${TAG} Failed to write L0 file: ${err instanceof Error ? err.message : String(err)}`);
-    // Return filtered messages anyway so L1 can still process them
   }
 
   return filtered;

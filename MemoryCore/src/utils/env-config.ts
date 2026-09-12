@@ -188,3 +188,20 @@ export function resolveV3StrictIsolation(): boolean {
   const raw = (ENV.V3_STRICT_ISOLATION ?? "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
 }
+
+/**
+ * VENDOR PATCH P2 (tokencamp fork — see PATCHES.md): whether the standalone
+ * `conversations/<date>.jsonl` raw-text mirror is written.
+ *
+ * Source: `TDAI_STANDALONE_JSONL_MIRROR` — "1" / "true" / "on" / "yes" turns
+ * the mirror on. **Defaults to OFF** (upstream behavior inverted on purpose):
+ * the mirror is an append-only copy of full conversation content with no
+ * per-row deletion surface, which conflicts with the zero-raw-text and
+ * right-to-erasure postures. Enforced at both writers: the v2
+ * `/conversation/add` mirror (v2-router) and the v1 `/capture` recorder
+ * (l0-recorder). The authoritative store is unaffected either way.
+ */
+export function readStandaloneJsonlMirrorEnabled(): boolean {
+  const raw = (ENV.TDAI_STANDALONE_JSONL_MIRROR ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
