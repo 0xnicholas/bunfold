@@ -704,7 +704,7 @@ export function createL1Runner(opts: {
         }
         logger.info(
           `${TAG} [l1] Consumed L0 rows deleted: ${l0Deleted}/${processed.length}` +
-          (l0DeleteFailed > 0 ? ` (${l0DeleteFailed} FAILED — residue until a future run reprocesses)` : ""),
+          (l0DeleteFailed > 0 ? ` (${l0DeleteFailed} FAILED — residue is permanent: future runs only fetch rows newer than the cursor)` : ""),
         );
       }
 
