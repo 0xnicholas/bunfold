@@ -263,6 +263,9 @@ export class SceneExtractor {
         // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
         storage: this.storage,
         storagePrefix: this.storage ? StoragePaths.sceneBlocksDir : undefined,
+        // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
+        instanceId: this.instanceId,
+        agentId: this.traceContext?.agentId,
         ...traceParams,
       }) ?? "";
       llmDurationMs = Date.now() - runnerStartMs;

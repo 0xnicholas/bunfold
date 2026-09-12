@@ -281,6 +281,20 @@ export class StandaloneLLMRunner implements LLMRunner {
   }
 
   async run(params: LLMRunParams): Promise<string> {
+    // VENDOR PATCH P3 (tokencamp fork — see PATCHES.md): every outbound LLM
+    // call must carry cost-attribution headers. Fail closed BEFORE any work:
+    // an unattributed call is both unbillable upstream and a misconfiguration
+    // signal, so it must never leave the process.
+    const tcInstance = params.instanceId?.trim();
+    const tcAgent = params.agentId?.trim();
+    if (!tcInstance || !tcAgent) {
+      throw new Error(
+        `${TAG} Missing cost-attribution identity (` +
+        `x-tc-instance=${tcInstance || "(missing)"}, x-tc-agent=${tcAgent || "(missing)"}) — ` +
+        `refusing unattributed LLM call (taskId=${params.taskId})`,
+      );
+    }
+
     const runStartMs = Date.now();
     const timeoutMs = params.timeoutMs ?? this.config.timeoutMs ?? 120_000;
     const maxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096;
@@ -301,10 +315,16 @@ export class StandaloneLLMRunner implements LLMRunner {
     // Create OpenAI-compatible provider via AI SDK
     // Use "compatible" mode to call /chat/completions (not Responses API),
     // which works with all OpenAI-compatible backends (DeepSeek, Qwen, etc.)
+    //
+    // VENDOR PATCH P3: attach the cost-attribution headers resolved above.
     const provider = createOpenAI({
       baseURL: this.config.baseUrl,
       apiKey: this.config.apiKey,
       compatibility: "compatible",
+      headers: {
+        "x-tc-instance": tcInstance,
+        "x-tc-agent": tcAgent,
+      },
     });
 
     // Select tools based on mode + storage

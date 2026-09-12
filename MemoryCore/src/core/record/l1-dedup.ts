@@ -74,8 +74,10 @@ export async function batchDedup(params: {
   filter?: IsolationFilter;
   /** langfuse 上报身份四元组（team/user/agent/session），透传给 llmRunner。 */
   traceContext?: TraceContext;
+  /** VENDOR PATCH P3: instance ID forwarded to the runner for cost attribution. */
+  instanceId?: string;
 }): Promise<DedupDecision[]> {
-  const { memories, config, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext } = params;
+  const { memories, config, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext, instanceId } = params;
   const topK = params.conflictRecallTopK ?? 5;
 
   if (memories.length === 0) {
@@ -131,7 +133,7 @@ export async function batchDedup(params: {
   }
 
   // Phase 2: Batch LLM judgment
-  return runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext);
+  return runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, instanceId);
 }
 
 /**
@@ -146,6 +148,7 @@ async function runLlmJudgment(
   promptMode: MemoryPromptMode,
   llmRunner?: LLMRunner,
   traceContext?: TraceContext,
+  instanceId?: string,
 ): Promise<DedupDecision[]> {
   logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
@@ -165,6 +168,9 @@ async function runLlmJudgment(
         systemPrompt,
         taskId: "l1-conflict-detection",
         timeoutMs: 180_000,
+        // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
+        instanceId,
+        agentId: traceContext?.agentId,
         ...traceParams,
       });
     } else {

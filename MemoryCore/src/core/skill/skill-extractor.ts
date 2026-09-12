@@ -251,6 +251,8 @@ export class SkillExtractor {
         sessionId: input.session_id,
         userId: input.user_id,
         instanceId: input.space_id,
+        // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
+        agentId: input.agent_id,
       });
     } catch (e) {
       // 一条 warn 汇总失败，包含 task_id / err_name / dur —— Worker 侧再按分类
@@ -395,6 +397,8 @@ export class SkillExtractor {
       sessionId: input.session_id,
       userId: input.user_id,
       instanceId: input.space_id,
+      // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
+      agentId: input.agent_id,
     });
     return sanitizeGeneratedQuery(raw);
   }
