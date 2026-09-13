@@ -125,6 +125,12 @@ export const userKeyUpdateSchema = z.object({
 export const teamCreateSchema = z.object({
   name: nonEmpty,
   owner_user_id: nonEmpty,
+  // VENDOR PATCH P7 (see PATCHES.md «P7»): accept a client-supplied team id.
+  // Both store adapters already honor input.team_id on insert (the PK-retry
+  // loop only re-mints when the caller supplied none); upstream stripped the
+  // field here, so creates always minted team-*. Omitting it keeps that
+  // server-minted behavior unchanged.
+  team_id: nonEmpty.optional(),
   description: z.string().optional(),
   status: teamStatus.optional(),
   metadata_json: z.string().optional(),
@@ -160,6 +166,10 @@ export const agentCreateSchema = z.object({
   team_id: nonEmpty,
   owner_user_id: nonEmpty,
   name: nonEmpty,
+  // VENDOR PATCH P7 (see PATCHES.md «P7»): accept a client-supplied agent id,
+  // same shape as teamCreateSchema.team_id — stores honor it, omission keeps
+  // the server-minted agt-* behavior.
+  agent_id: nonEmpty.optional(),
   description: z.string().optional(),
   prompt: z.string().optional(),
   visibility: visibility.optional(),

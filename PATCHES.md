@@ -162,6 +162,31 @@
 - **测试**: `MemoryCore/__tests__/vendor-invariants/fts5-sanitize.test.ts`
   (含 fake-jieba 判别用例 + 真实 FTS5 表召回对照)
 
+## P7 — v3 meta team/agent create 接受 client-supplied id
+
+- **动机**: tokencamp 的隔离映射是纯函数(team 固定 `tokencamp`,agent = project
+  UUID,见 pro 仓 `crates/memory/src/mapping.rs`),`conversation/add` 的
+  `ensureChatMemoryAsset` 钩子只在 team/agent 元数据行存在时才绑定 chat_memory
+  资产,而 clear/archive 生命周期操作按确定性资产 id
+  `chat_memory-tokencamp-<project UUID>` 寻址。上游 v3 schema 把 `team_id` /
+  `agent_id` zod-strip 掉,create 永远服务端铸 id(`team-*` / `agt-*`)——
+  纯函数 id 永远注册不进来,资产行不存在,clear/archive 只能 404。
+- **落点**: `MemoryCore/src/metadata/router/v3-meta-schemas.ts` —
+  `teamCreateSchema` 增 `team_id: nonEmpty.optional()`,`agentCreateSchema` 增
+  `agent_id: nonEmpty.optional()`(各带 `VENDOR PATCH P7` 注释锚点)。**仅此
+  一处**:两个 store adapter(sqlite `sqlite-adapter.ts` createTeam/createAgent、
+  mongodb `mongodb-adapter.ts` 同名方法)基线即 `input.team_id ?? generateId(...)`
+   honored client id,服务层透传,缺的只是 schema 放行。
+- **不变量**: 传 id 时建行用该 id 且 chat_memory 资产按确定性 id 登记;不传时
+  维持上游服务端铸 id 形状(`team-*` / `agt-*` 前缀);client id 撞主键时
+  **报错而不是静默另铸**(PK 重试循环只在未传 id 时生效)——调用方读到的
+  team_id 恒等于自己传入的值。
+- **偏离声明**: 无对上游行为的有意偏离——纯增量可选字段,省略路径与上游逐字节
+  一致。重复 client id 的报错面是裸 store 错误经 dispatch 落 500
+  `internal_error`(上游对任何 store 层未包装错误同此形状),不新增错误码。
+- **测试**: `MemoryCore/__tests__/vendor-invariants/client-supplied-meta-ids.test.ts`
+  (schema 保留字段 + 端到端建行与资产登记 + 省略回退 + 重复报错)
+
 ---
 
 ## 已知的上游既有问题(不属于本台账,仅登记)
