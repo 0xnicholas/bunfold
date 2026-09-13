@@ -121,6 +121,32 @@
   这与 wiki 属第二波(wave-2)接入一致;wave-2 再定 project 映射。
 - **测试**: `MemoryKnowledge/__tests__/vendor-invariants/wiki-attribution-headers.test.ts`
 
+## P6 — 实例销毁物理删除 standalone 数据存储
+
+- **动机**: 遗忘权收口。上游 `instance/destroy`(v2/v3 共用 `purgeInstanceCommon`)
+  只做进程内清理(管道状态、池句柄 evict、元数据库 drop)——**SQLite 数据文件
+  留在盘上**,下次访问静默重开,已"销毁"实例的全部 L0/L1 内容仍可查询。tokencamp
+  的 workspace 删除(org dissolution)语义 = 实例记忆物理消失(ADR-0071 §2),
+  evict-only 销毁不破这个口就不算抹净。
+- **落点**:
+  - 新方法 `StorePool.deleteInstanceData(instanceId)`:
+    `MemoryCore/src/core/store/store-pool.ts`(紧随 `evict`)——先 evict 池句柄
+    (各模式同上游),sqlite 模式下再删盘上存储:非 `default` 实例删
+    `instances/<id>/` 整目录(db + wal + shm);`default` 实例只删 dataDir 下的
+    `vectors.db{,-shm,-wal}` 三个文件(同目录的 `.metadata/` 台账不属于该实例,
+    不动)。tcvdb/mongodb(service)模式远端数据自有生命周期,只 evict 不删盘。
+  - 接线:`MemoryCore/src/gateway/server.ts` `purgeInstanceCommon` 第 2 步,
+    原 bare `evict` 调用替换为 `deleteInstanceData`,回执新增 `data_deleted`。
+- **不变量**: sqlite standalone 下 destroy 后实例目录不存在;池句柄与数据同亡,
+  销毁后首次访问重建的是**空** store(无复活);`default` 实例只丢 db 文件,
+  共享 dataDir 其余内容不动;service 模式盘上零删除;销毁不存在的实例 =
+  `deleted: false` 幂等。
+- **残留语义(诚实登记)**: `.metadata/recall_checkpoint.json` 里被销毁实例的
+  L1 游标条目不随删(游标只抑制复蒸馏,不含内容;instanceId 是 UUID 不会复用,
+  无复活路径)。30s grace-close(CR-5)与删文件可并发——POSIX 下删打开中的
+  SQLite 文件安全,句柄关闭落到已删 inode。
+- **测试**: `MemoryCore/__tests__/vendor-invariants/instance-destroy-deletes-data.test.ts`
+
 ## FTS5 — 上游 main 线 MATCH 注入修复 backport
 
 - **commit**: `36e20fc`,backport 自上游 main **`1d4f84b`**

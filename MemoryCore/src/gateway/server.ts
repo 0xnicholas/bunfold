@@ -1369,10 +1369,16 @@ export class TdaiGateway {
     // 2. Evict store from StorePool (Memory + Skill)
     if (this.storePool) {
       try {
-        await this.storePool.evict(instanceId);
+        // VENDOR PATCH P6 (tokencamp fork — see PATCHES.md «P6»):
+        // deleteInstanceData evicts the pool handle AND removes the
+        // instance's on-disk store (sqlite standalone) — upstream's
+        // bare evict left vectors.db on disk, silently re-opened on
+        // the next access, so "destroyed" memory stayed queryable.
+        const data = await this.storePool.deleteInstanceData(instanceId);
         this.storePool.evictSkillStore(instanceId);
         cleaned.store_evicted = true;
         cleaned.skill_store_evicted = true;
+        cleaned.data_deleted = data.deleted;
       } catch (err) {
         this.logger.error(`${tag} Store evict failed: ${err instanceof Error ? err.message : String(err)}`);
         cleaned.store_evicted = false;

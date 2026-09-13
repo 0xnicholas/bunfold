@@ -251,6 +251,47 @@ export class StorePool {
   }
 
   /**
+   * VENDOR PATCH P6 (tokencamp fork — see PATCHES.md «P6»): physical
+   * instance erasure in sqlite (standalone) mode.
+   *
+   * evict() alone only closes the pool handle — vectors.db (every
+   * L0/L1 memory row of the instance) stays on disk and is silently
+   * re-opened on the next access, so an evict-only "destroy" never
+   * erased the memory content. The forgetting-rights / org-dissolution
+   * caller needs destroy = the data is gone. In tcvdb/mongodb
+   * (service) mode the remote data has its own lifecycle; nothing is
+   * deleted here, but the pool handle is still evicted.
+   *
+   * Returns whether on-disk data existed (and was removed), plus the
+   * removed path for logs.
+   */
+  async deleteInstanceData(instanceId: string): Promise<{ deleted: boolean; path: string }> {
+    // The pool handle must die with the data in every mode: a survivor
+    // would re-create the store on the next write, resurrecting a
+    // pre-delete state.
+    await this.evict(instanceId);
+    if (this.mode !== "sqlite") {
+      return { deleted: false, path: "" };
+    }
+    const { rm } = await import("node:fs/promises");
+    if (instanceId === "default") {
+      // The default store lives directly under dataDir — remove only
+      // the db files (the dir also holds .metadata/ bookkeeping and
+      // the conversations/ dir, neither of which is this instance's).
+      const dbPath = this.getSqlitePath(instanceId);
+      const existed = ["", "-shm", "-wal"].some((suffix) => existsSync(dbPath + suffix));
+      for (const suffix of ["", "-shm", "-wal"]) {
+        await rm(dbPath + suffix, { force: true });
+      }
+      return { deleted: existed, path: dbPath };
+    }
+    const dir = path.join(this.dataDir, "instances", instanceId);
+    const existed = existsSync(dir);
+    await rm(dir, { recursive: true, force: true });
+    return { deleted: existed, path: dir };
+  }
+
+  /**
    * 关闭所有 Store
    *
    * CR-5: 原 closeAll 直接同步关闭所有 pool 内 store, 会导致 in-flight 请求崩溃.
