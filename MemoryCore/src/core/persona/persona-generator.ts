@@ -213,6 +213,8 @@ export class PersonaGenerator {
         // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
         instanceId: this.instanceId,
         agentId: this.traceContext?.agentId,
+        // VENDOR PATCH P8: work kind for x-tc-work (runner fails closed if absent/unknown).
+        work: "distill-l3",
         ...traceParams,
       });
       this.logger?.debug?.(`${TAG} LLM runner completed`);

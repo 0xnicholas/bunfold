@@ -187,6 +187,48 @@
 - **测试**: `MemoryCore/__tests__/vendor-invariants/client-supplied-meta-ids.test.ts`
   (schema 保留字段 + 端到端建行与资产登记 + 省略回退 + 重复报错)
 
+## P8 — 蒸馏/embedding 回调注入 x-tc-work 词表头,缺头/出词表 fail-closed
+
+- **动机**: 账本 note 词表诚实。网关计费回调通道(tokencamp-pro #220,
+  `crates/gateway/src/memory_callback.rs`)以 `x-tc-work` 为 note 词表的**唯一来源**
+  (`distill-l1/l2/l3` → `memory distill L1/L2/L3`,`embed` → `memory embed`),
+  缺头或 token 出词表一律 fail-closed(400,词表不可猜)。P3/P4 只穿透了归属两头,
+  引擎不从任务点发 work 头 → engine 模式下真实蒸馏/embedding 回调全被拒、账本零
+  `memory_write` 行。本 patch 在引擎侧穿透第三个头(tokencamp-pro #228),回调通道
+  端到端闭环。
+- **落点**:
+  - chat 词表常量 `TC_CHAT_WORK_TOKENS`:`MemoryCore/src/core/types.ts:72`;
+    `LLMRunParams.work?: string`:`MemoryCore/src/core/types.ts:132`(紧邻 P3 的 `agentId`)
+  - fail-closed + 注头:`MemoryCore/src/adapters/standalone/llm-runner.ts:298-310`
+    (P3 归属校验之后校验 work,缺失/出词表在**发出 HTTP 请求之前**抛错)、
+    `:334-342`(`createOpenAI` headers 注入 `x-tc-work`)
+  - 任务点穿引(P3 同位,仅 host-neutral `llmRunner` 分支):
+    L1 extract 传 `distill-l1`(`core/record/l1-extractor.ts:533`)、
+    L1 dedup 传 `distill-l1`(`core/record/l1-dedup.ts:174`)、
+    L2 scene 传 `distill-l2`(`core/scene/scene-extractor.ts:269`)、
+    L3 persona 传 `distill-l3`(`core/persona/persona-generator.ts:216`)
+  - embedding:`core/store/embedding.ts:558-562`(`_callApi` headers 固定注
+    `x-tc-work: embed`)——embeddings 面只有一个 work 种类,归属已 fail-closed,
+    凡发出的远程 embedding 请求皆 embed 回调,无需逐点穿引
+- **不变量**: standalone runner 发出的每个 chat 请求必带词表内 `x-tc-work`;
+  缺失或出词表(含 chat 面上的 `embed`——面不匹配即畸形回调)在发请求前抛错,
+  零请求上线;每个远程 embedding 请求必带 `x-tc-work: embed`;L1/L2/L3 任务点
+  各发其 token。词表与网关侧 `Work` enum 互为镜像,加种类 = 双侧词表变更,
+  不是自由文本。
+- **明确不穿引**(词表外种类,wave-2 落地时一并处理):
+  - `core/skill/skill-extractor.ts` 两处:词表无 skill 种类。不穿引 → runner
+    fail-closed 本地抛错;指向 tokencamp 网关时该链 patch 前即被网关 400 拒绝,
+    同效但零未命名请求上线,且错误在本地即可读。
+  - MemoryKnowledge wiki 链(P5):词表无 wiki 种类,网关本就因 team 非 project
+    拒绝(见 P5 槽位语义声明)。
+  - OpenClaw-host runner 路径(同 P3「明确不改」)。
+- **对既有测试的修订登记**: P3 套件直连 runner 用例补传 `work: "distill-l1"`
+  (runner 新增必填校验);其两条 fail-closed 用例不变(归属校验先于 work 校验,
+  仍抛 `x-tc-instance`/`x-tc-agent`)。
+- **测试**: `MemoryCore/__tests__/vendor-invariants/work-token-headers.test.ts`
+  (7 节:词表三 token 各发各头、缺头/出词表零请求、L1 管道 e2e 发 `distill-l1`、
+  L2/L3 任务点穿引判别、embed/embedBatch 发 `embed`)
+
 ---
 
 ## 已知的上游既有问题(不属于本台账,仅登记)
