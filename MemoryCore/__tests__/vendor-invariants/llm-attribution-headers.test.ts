@@ -91,6 +91,9 @@ describe("P3: StandaloneLLMRunner attribution headers", () => {
       taskId: "l1-extraction",
       instanceId: "inst-1",
       agentId: "agent-1",
+      // P8: the runner also requires a work token now (see
+      // work-token-headers.test.ts for the x-tc-work invariant).
+      work: "distill-l1",
     });
 
     expect(text).toBe("[]");

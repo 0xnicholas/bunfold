@@ -555,6 +555,11 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       Authorization: `Bearer ${this.apiKey}`,
       "x-tc-instance": tcInstance,
       "x-tc-agent": tcAgent,
+      // VENDOR PATCH P8 (tokencamp fork — see PATCHES.md «P8»): the
+      // embeddings surface has exactly one work kind, so every attributed
+      // (and attribution is fail-closed, above) remote embedding call is
+      // named `embed` — the gateway's ledger-note vocabulary token for it.
+      "x-tc-work": "embed",
     };
     if (useProxy) {
       headers["Remote-URL"] = `${this.baseUrl}/embeddings`;

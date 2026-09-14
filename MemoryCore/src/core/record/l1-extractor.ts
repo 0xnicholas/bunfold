@@ -530,6 +530,8 @@ async function callLlmExtraction(params: {
       // VENDOR PATCH P3: cost-attribution identity (runner fails closed if absent).
       instanceId,
       agentId: traceContext?.agentId,
+      // VENDOR PATCH P8: work kind for x-tc-work (runner fails closed if absent/unknown).
+      work: "distill-l1",
       ...traceParams,
     });
   } else {

@@ -28,6 +28,7 @@ import type {
   LLMRunnerCreateOptions,
   Logger,
 } from "../../core/types.js";
+import { TC_CHAT_WORK_TOKENS } from "../../core/types.js";
 import type { LLMUsage } from "../../core/report/metric-tracking-runner.js";
 
 const TAG = "[memory-tdai] [standalone-runner]";
@@ -294,6 +295,19 @@ export class StandaloneLLMRunner implements LLMRunner {
         `refusing unattributed LLM call (taskId=${params.taskId})`,
       );
     }
+    // VENDOR PATCH P8 (tokencamp fork — see PATCHES.md «P8»): every outbound
+    // LLM call must also name its work kind. The gateway derives the ledger
+    // note from `x-tc-work` and fails closed without it (the vocabulary must
+    // stay honest — never guessed), so an unnamed or out-of-vocabulary call
+    // must never leave the process either.
+    const tcWork = params.work?.trim();
+    if (!tcWork || !(TC_CHAT_WORK_TOKENS as readonly string[]).includes(tcWork)) {
+      throw new Error(
+        `${TAG} Missing/unknown work token (` +
+        `x-tc-work=${tcWork || "(missing)"}, expected one of ${TC_CHAT_WORK_TOKENS.join("/")}) — ` +
+        `refusing unnamed LLM call (taskId=${params.taskId})`,
+      );
+    }
 
     const runStartMs = Date.now();
     const timeoutMs = params.timeoutMs ?? this.config.timeoutMs ?? 120_000;
@@ -317,6 +331,7 @@ export class StandaloneLLMRunner implements LLMRunner {
     // which works with all OpenAI-compatible backends (DeepSeek, Qwen, etc.)
     //
     // VENDOR PATCH P3: attach the cost-attribution headers resolved above.
+    // VENDOR PATCH P8: attach the work token resolved above (x-tc-work).
     const provider = createOpenAI({
       baseURL: this.config.baseUrl,
       apiKey: this.config.apiKey,
@@ -324,6 +339,7 @@ export class StandaloneLLMRunner implements LLMRunner {
       headers: {
         "x-tc-instance": tcInstance,
         "x-tc-agent": tcAgent,
+        "x-tc-work": tcWork,
       },
     });
 

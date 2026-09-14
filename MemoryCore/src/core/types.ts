@@ -61,6 +61,16 @@ export interface RuntimeContext {
 // LLMRunner
 // ============================
 
+/**
+ * VENDOR PATCH P8 (tokencamp fork — see PATCHES.md «P8»): the chat
+ * callback's work vocabulary, sent as `x-tc-work`. Mirrors the gateway's
+ * closed Work enum (tokencamp-pro crates/gateway/src/memory_callback.rs) —
+ * the gateway fails closed on any token outside this set, so the runner
+ * refuses to emit one. Adding a work kind (skill extract, wiki build —
+ * wave 2) is a vocabulary change on BOTH sides, never a free-form string.
+ */
+export const TC_CHAT_WORK_TOKENS = ["distill-l1", "distill-l2", "distill-l3"] as const;
+
 /** Parameters for a single LLM execution. */
 export interface LLMRunParams {
   /** User-facing prompt (or combined prompt if no systemPrompt). */
@@ -112,6 +122,14 @@ export interface LLMRunParams {
    * request) when either is unresolved.
    */
   agentId?: string;
+  /**
+   * VENDOR PATCH P8 (tokencamp fork — see PATCHES.md «P8»): the work kind,
+   * sent as the `x-tc-work` header on every outbound LLM call made by the
+   * standalone runner. The gateway names the ledger note from this token and
+   * fails closed without it, so the runner likewise fails closed (throws
+   * before any request) when it is missing or outside TC_CHAT_WORK_TOKENS.
+   */
+  work?: string;
   /**
    * H-11 Step 2: external abort signal (in addition to the internal timeout).
    * When this aborts (e.g. pipeline-worker lost its lock), the LLM call
