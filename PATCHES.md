@@ -255,6 +255,88 @@
   (7 节:词表三 token 各发各头、缺头/出词表零请求、L1 管道 e2e 发 `distill-l1`、
   L2/L3 任务点穿引判别、embed/embedBatch 发 `embed`)
 
+## P9 — v3 `/atomic/create` L1 直写端点 + metadata_json 读面透出
+
+- **动机**: 手工条目注入(ADR-0073 §2,tokencamp-pro #233)。网关适配层需要
+  单条同步的 L1 create:client-provided id 幂等、撞 id 报 409 而非静默覆盖
+  (stock upsert 语义是 ON CONFLICT DO UPDATE)、provenance 标记
+  (`{"origin":"manual"}`)落既有 `metadata_json` 列并经 `/atomic/query` 读回——
+  「改」权限按 origin 分叉依赖该标记在 update 覆写后存活。消费方契约:
+  `crates/memory/src/engine.rs` `create_entry` / `EntryRow.metadata_json`。
+- **落点**:
+  - 请求 schema + 回执类型:`MemoryCore/src/gateway/v2-schemas.ts:162-198`
+    (`atomicCreateRequestSchema`:content 1–8192 对齐 conversation item 上限、
+    id 1–128 可选、`metadata_json` 必须是 JSON object 串;`AtomicCreateData`);
+    `AtomicDetail` override 增 `metadata_json?: string`:`v2-schemas.ts:157`
+    (沿用本文件「generated 基线 + 手写 override」的既有惯例,不动 Kubb 生成物)
+  - handler `handleAtomicCreate`:`MemoryCore/src/gateway/v2-router.ts:1096-1146`
+    —— 省略 id 复用 stock 铸 id `generateMemoryId()`(`core/record/l1-writer.ts:148`,
+    形状 `m_<epochMs>_<hex>`);撞 id 走 `findL1RowById` 精确读后 envelope 409;
+    embedding 镜像 update 的 P4 归属注头、best-effort(即写即可检索);
+    `created_at` 与 query 行同为 `new Date().toISOString()` 序列化
+  - 按主键精确读 helper `findL1RowById`:`v2-router.ts:1080-1083`
+  - 挂载:v3-only —— `V3_ALLOWED_SUBPATHS`(`v2-router.ts:165`)+
+    `DATAPLANE_HANDLERS`(`:426`)+ routeTable 分流条件
+    (`:447`,`/count` 同模式 carve-out),`/v2/atomic/create` 不生长
+  - `/atomic/query` 两路径(分页 + fallback)投影 `metadata_json`:
+    `v2-router.ts:1250`、`:1277`(store 层 `queryL1Paginated`/`queryL1Records`
+    本就 SELECT 该列,零 store 改动)
+  - **stock update 修复一(精确行读)`handleAtomicUpdate`**:`v2-router.ts:1161-1169`
+    —— 见「偏离声明(二)」
+  - **stock update 修复二(P4 埋点笔误)**:handler 形参 `_auth` → `auth`
+    (`v2-router.ts:1148`)——P4 的 embed 调用引用 `auth.serviceId`,在 `_auth`
+    形参下永远 ReferenceError 并被自身 try/catch 吞掉,update 实际从未向量化;
+    P4 套件未覆盖该 handler 故未暴露
+- **选定默认值(诚实登记)**: 直写行 `type` 固定 `"episodic"`(stock 词表内,
+  query 侧不按 type 消费手工条目)、`priority` 50(镜像 update 回退值)、
+  `version` 1(见「偏离声明(四)」)、`session_key`/`session_id` 取
+  iso.sessionId(缺省 `default` 桶,与 v3「缺 session 按 (team,agent,user)
+  聚合」语义一致)。
+- **不变量**: 省略 id → 引擎铸 `m_*` id 且 `metadata_json` 落 `"{}"`;client id
+  原样建行、metadata 逐字节 verbatim(紧凑 JSON 经 parse→stringify 往返不变);
+  新行 version 1、首次 update 回执 `v2`(公共契约,偏离声明(四));撞 id →
+  envelope 409 且原行零改动;content 空/超 8192、metadata_json 非 JSON
+  object 串 → 400;`/atomic/query` 逐行投影 `metadata_json`(且 background /
+  user_id / created_at / updated_at / version 不丢);`/atomic/update` 覆写后目标行
+  metadata 存活、且不向兄弟行泄漏;新路由吃 v3 strict isolation(缺三元组
+  成员 → 422)、`/v2` 不挂载。
+- **偏离声明**:
+  - **(一)metadata_json 校验收紧**:brief 只要求「可解析为 JSON」;实现要求
+    JSON **object**(拒标量/数组/null),与 update 读改写的 `parseMetadataJson`
+    接纳规则对齐——否则非 object 值会在首次 update 时被静默改写成 `{}`,
+    「verbatim 存储」不自洽。
+  - **(二)stock update 精确行读修复**:sqlite `queryL1Records` **忽略**
+    `L1QueryFilter.recordIds`(直落 `stmtQueryAll` 返回全表;实测复核),
+    stock 实现的 `existing[0]` 拿到的是 `updated_time` 最旧的兄弟行——metadata/
+    隔离维/version 基线全部抄错行,且表非空时 404 永不触发。provenance 不变量
+    (标记随目标行存活)依赖按 id 精确读,故并入本 patch:update 404 语义变为
+    真实触发、字段来源变为目标行本身——均属 handler 自身注释契约
+    ("Read existing record by primary key")的兑现,非语义改写。
+  - **(三)`/atomic/search` 不透出 metadata_json**:消费方不需要;透出需改
+    `core/tools/memory-search.ts` 的 item 映射(搜索结果类型本无该字段),
+    属「为它扭曲既有链」——不做。`AtomicSearchHit` 类型经 override 继承
+    可选字段,值为空。
+  - **(四)create 新行铸 version 1,有意偏离 stock 写路径的 0**:公共契约
+    (`generated/types.ts` AtomicDetail 文档:「新建笔记初始版本 `v1`;
+    `version` 每次 `/atomic/update` 自增」)要求新建即 v1、首次 update 回执
+    v2——`/atomic/create` 是回执对客户端可见的**公共写端点**,必须让文档为真
+    (`v2-router.ts:1134`)。stock 蒸馏写路径 `l1-writer.ts:193` 新行写 0 是
+    上游文档/代码不一致的既有问题,且该行走在内部路径(蒸馏行从不经过
+    create),P9 不把 0 复制到新的公共面上。混合池因此同时存在 version 0 的
+    蒸馏行与 version 1 的手工行:version 只是回执/日志值,引擎内唯一消费点
+    是 l1-writer 的单调 `maxVersion+1`,混合下语义保持正确。
+- **残留语义(诚实登记)**:
+  - 撞 id 检查是 check-then-act;better-sqlite3 同步驱动 + 检查与 upsert 之间
+    无 await,进程内不可交错。**跨进程**(多副本)竞态仍塌缩为 upsert 后写胜——
+    409 只兜顺序与进程内并发;tokencamp 侧网关 read-before-write 先行拦截,
+    envelope 409 是竞态塌缩面(engine.rs doc 同口径)。
+  - create 不写 audit(recordAudit 词表仅 update/delete,无 create 种类)、
+    不过 quota(镜像 update;quota 只在 conversation/add)。
+- **测试**: `MemoryCore/__tests__/vendor-invariants/atomic-create.test.ts`
+  (6 节 12 例:铸 id/默认 metadata/新行 version 1、client id verbatim、撞 id 409
+  零改动、400 校验三例、query 投影、update 保 metadata 且双行pin精确读 +
+  首更回执 v2 + 真 404、v3 挂载/strict isolation/v2 不挂载)
+
 ---
 
 ## 已知的上游既有问题(不属于本台账,仅登记)

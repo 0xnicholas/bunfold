@@ -4,7 +4,7 @@
  * Implements POST routes defined in `01-api-spec.yaml`:
  *
  *   L0 Conversation: add / query / search / delete
- *   L1 Atomic:       update / query / search / delete
+ *   L1 Atomic:       create (v3-only, VENDOR PATCH P9) / update / query / search / delete
  *   L2 Scenario:     ls / read / write / rm
  *   L3 Core:         read / write
  *
@@ -17,7 +17,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
 import { classifyError } from "./error-handler.js";
-import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
+import type { IMemoryStore, L0Record, L1RecordRow, ProfileSyncRecord } from "../core/store/types.js";
+import { DEFAULT_ISOLATION_ID } from "../core/store/types.js";
 import type { EmbeddingService } from "../core/store/embedding.js";
 import { createScopedStorageAdapter, scopeProfileStorageView, type StorageAdapter } from "../core/storage/adapter.js";
 import { StoragePaths } from "../core/storage/types.js";
@@ -27,6 +28,7 @@ import type { PipelineWorker } from "../services/pipeline-worker.js";
 import { executeMemorySearch } from "../core/tools/memory-search.js";
 import { executeConversationSearch } from "../core/tools/conversation-search.js";
 import type { MemoryRecord } from "../core/record/l1-writer.js";
+import { generateMemoryId } from "../core/record/l1-writer.js";
 import { reportRecallMetrics } from "../core/report/metric-tracking-recall.js";
 
 // ── Zod schemas (validated types + defaults) ──
@@ -37,6 +39,7 @@ import {
   conversationDeleteRequestSchema,
   conversationCountRequestSchema,
   atomicUpdateRequestSchema,
+  atomicCreateRequestSchema,
   atomicQueryRequestSchema,
   atomicSearchRequestSchema,
   atomicDeleteRequestSchema,
@@ -77,6 +80,7 @@ import {
   type CountData,
   type AtomicDetail,
   type AtomicUpdateData,
+  type AtomicCreateData,
   type AtomicQueryData,
   type AtomicSearchData,
   type AtomicSearchHit,
@@ -158,6 +162,7 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/conversation/delete",
   "/conversation/count",
   "/atomic/update",
+  "/atomic/create", // VENDOR PATCH P9: v3-only L1 direct write
   "/atomic/query",
   "/atomic/search",
   "/atomic/delete",
@@ -418,6 +423,7 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/conversation/delete": handleConversationDelete,
   "/conversation/count": handleConversationCount,
   "/atomic/update": handleAtomicUpdate,
+  "/atomic/create": handleAtomicCreate, // VENDOR PATCH P9: v3-only (carved out below)
   "/atomic/query": handleAtomicQuery,
   "/atomic/search": handleAtomicSearch,
   "/atomic/delete": handleAtomicDelete,
@@ -433,11 +439,14 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
 };
 
 const routeTable: Record<string, RouteHandler> = {
-  // L0–L3 数据面：历史读写接口保留 /v2 与 /v3 双入口；count 仅按 sdk-v3.yaml 暴露 /v3。
+  // L0–L3 数据面：历史读写接口保留 /v2 与 /v3 双入口；count 仅按 sdk-v3.yaml 暴露 /v3；
+  // /atomic/create（VENDOR PATCH P9）同为 v3-only。
   ...Object.fromEntries(
     Object.entries(DATAPLANE_HANDLERS).flatMap(([sub, h]) => {
       const v3Route = [`${V3_PREFIX}${sub}`, h] as const;
-      if (sub.endsWith("/count")) return [v3Route];
+      // VENDOR PATCH P9: /atomic/create is v3-only like the count endpoints —
+      // new endpoints don't grow legacy /v2 entries.
+      if (sub.endsWith("/count") || sub === "/atomic/create") return [v3Route];
       return [[`${V2_PREFIX}${sub}`, h] as const, v3Route];
     }),
   ),
@@ -518,7 +527,7 @@ export async function handleV2Route(
   );
   if (!isV2 && !isV3) return false;
 
-  // /v3 暴露 L0–L3 数据面 14 条（V3_ALLOWED_SUBPATHS）+ /v3/skill/* + /v3/knowledge/*（extraRouteTable）；
+  // /v3 暴露 L0–L3 数据面 19 条（V3_ALLOWED_SUBPATHS，含 VENDOR PATCH P9 的 /atomic/create）+ /v3/skill/* + /v3/knowledge/*（extraRouteTable）；
   // 其他 /v3 子路径直接走 404
   if (isV3 && !isV3Extra) {
     const sub = pathname.slice(V3_PREFIX.length);
@@ -1062,7 +1071,85 @@ async function handleConversationDelete(body: unknown, auth: V2AuthContext, requ
   return successEnvelope<ConversationDeleteData>({ deleted_count: deletedCount }, requestId);
 }
 
-async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+/**
+ * VENDOR PATCH P9: read ONE L1 row by primary key. The sqlite store ignores
+ * `L1QueryFilter.recordIds` (falls through to stmtQueryAll and returns every
+ * row — see PATCHES.md «P9»), so the caller-side `find` is load-bearing on
+ * sqlite and a no-op on backends that honor the filter (tcvdb).
+ */
+async function findL1RowById(store: IMemoryStore, id: string): Promise<L1RecordRow | undefined> {
+  const rows = await store.queryL1Records({ recordIds: [id] });
+  return rows?.find((r) => r.record_id === id);
+}
+
+/**
+ * VENDOR PATCH P9 (tokencamp fork — see PATCHES.md «P9»): L1 direct write.
+ * One manual entry straight into the scope's L1 pool. `id` omitted → the
+ * stock mint (`generateMemoryId`, `m_<epochMs>_<hex>`); a client id that
+ * collides with an existing row is an envelope 409, never an upsert
+ * overwrite. `metadata_json` is stored verbatim on the row's existing
+ * column (default "{}"). Mirrors /atomic/update's background handling and
+ * P4-attributed best-effort embedding so the entry is immediately
+ * recallable; `created_at` answers in the same RFC 3339 shape
+ * /atomic/query rows emit (`created_time` verbatim).
+ */
+async function handleAtomicCreate(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const parsed = atomicCreateRequestSchema.safeParse(body);
+  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
+  const { id, content, background, metadata_json } = parsed.data;
+
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+
+  const iso = deps.requestIsolation;
+
+  const embedding = deps.getEmbedding();
+  let emb: Float32Array | undefined;
+  // VENDOR PATCH P4: cost-attribution identity for the embed callback.
+  if (embedding) { try { emb = await embedding.embed(content, { instanceId: auth.serviceId, agentId: iso?.agentId }); } catch (e) { console.warn(`[v2-router] L1 create embedding failed:`, e); } }
+
+  // Duplicate client id → 409, checked after the (only) await point: the
+  // sqlite driver is synchronous, so check → upsert cannot interleave with
+  // a concurrent in-process create.
+  if (id !== undefined && (await findL1RowById(store, id))) {
+    return errorEnvelope(409, `Atomic note already exists: ${id}`, requestId);
+  }
+
+  const now = new Date().toISOString();
+  const record: MemoryRecord = {
+    id: id ?? generateMemoryId(),
+    content,
+    type: "episodic",
+    priority: 50,
+    scene_name: background ?? "",
+    source_message_ids: [],
+    metadata: parseMetadataJson(metadata_json),
+    timestamps: [now],
+    createdAt: now,
+    updatedAt: now,
+    // VENDOR PATCH P9: new PUBLIC rows mint at version 1 — the wire contract
+    // (generated/types.ts AtomicDetail: 新建笔记初始版本 v1, 每次 update 自增)
+    // makes the first update receipt "v2". Deliberately diverges from the
+    // stock distillation writer's 0 (internal path); see PATCHES.md «P9».
+    version: 1,
+    sessionKey: iso?.sessionId || DEFAULT_ISOLATION_ID,
+    sessionId: iso?.sessionId || DEFAULT_ISOLATION_ID,
+    taskId: iso?.taskId,
+    teamId: iso?.teamId,
+    userId: iso?.userId,
+    agentId: iso?.agentId,
+  };
+
+  await store.upsertL1(record, emb);
+
+  return successEnvelope<AtomicCreateData>({ id: record.id, created_at: now }, requestId);
+}
+
+// VENDOR PATCH P9: param renamed _auth → auth — P4's embed call below
+// referenced `auth.serviceId`, which never resolved under `_auth` (the
+// ReferenceError was swallowed by its own try/catch, silently disabling
+// vectorization on every update).
+async function handleAtomicUpdate(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = atomicUpdateRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { id, content, background } = parsed.data;
@@ -1070,14 +1157,18 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
 
-  // Read existing record by primary key
-  const existing = await store.queryL1Records({ recordIds: [id] });
-  if (!existing || existing.length === 0) {
+  // Read existing record by primary key.
+  // VENDOR PATCH P9: exact-row read — the sqlite store ignores the recordIds
+  // filter, so `existing[0]` was the OLDEST row, not the target: metadata,
+  // isolation dims and the version base were copied from a sibling row, and
+  // 404 never fired while the table was non-empty. The provenance mark
+  // (metadata_json) must survive an update of the row that carries it.
+  const record = await findL1RowById(store, id);
+  if (!record) {
     return errorEnvelope(404, `Atomic note not found: ${id}`, requestId);
   }
 
   const now = new Date().toISOString();
-  const record = existing[0];
 
   // Build update: content is always overwritten; background (scene_name) only if provided.
   // user_id / agent_id are preserved from the existing row — updates don't
@@ -1160,6 +1251,8 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
       agent_id: r.agent_id,
       task_id: r.task_id,
       created_at: r.created_time, updated_at: r.updated_time,
+      // VENDOR PATCH P9: project the metadata column onto the read surface.
+      metadata_json: r.metadata_json,
     }));
     return successEnvelope<AtomicQueryData>({ items, total: result.total }, requestId);
   }
@@ -1185,6 +1278,8 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
     agent_id: r.agent_id,
     task_id: r.task_id,
     created_at: r.created_time, updated_at: r.updated_time,
+    // VENDOR PATCH P9: project the metadata column onto the read surface.
+    metadata_json: r.metadata_json,
   }));
 
   return successEnvelope<AtomicQueryData>({ items, total }, requestId);
@@ -2293,6 +2388,7 @@ export {
   handleConversationDelete,
   handleConversationCount,
   handleAtomicUpdate,
+  handleAtomicCreate,
   handleAtomicQuery,
   handleAtomicSearch,
   handleAtomicDelete,

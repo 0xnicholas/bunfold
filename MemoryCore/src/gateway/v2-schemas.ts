@@ -154,6 +154,49 @@ export interface AtomicDetail extends GeneratedAtomicDetail {
   user_id?: string;
   agent_id?: string;
   task_id?: string;
+  /** VENDOR PATCH P9: the row's metadata_json column, projected verbatim onto /atomic/query rows. */
+  metadata_json?: string;
+}
+
+// ============================
+// VENDOR PATCH P9: atomic create (L1 direct write, v3-only)
+// ============================
+
+/**
+ * metadata_json must carry a JSON object — mirrors parseMetadataJson's
+ * acceptance rule in v2-router, so the stored value survives the
+ * /atomic/update round-trip byte-for-byte instead of degrading to "{}".
+ */
+const metadataJsonSchema = z.string().refine(
+  (s) => {
+    try {
+      const v: unknown = JSON.parse(s);
+      return v !== null && typeof v === "object" && !Array.isArray(v);
+    } catch {
+      return false;
+    }
+  },
+  { message: "must be a JSON object string" },
+);
+
+/**
+ * VENDOR PATCH P9: `/v3/atomic/create` request. The isolation triple
+ * (team_id/agent_id/user_id) rides the body or x-tdai-* headers like every
+ * other data-plane route — validated by the /v3 strict-isolation check at
+ * dispatch, not by this schema (same split as conversationAddRequestSchema).
+ */
+export const atomicCreateRequestSchema = z.object({
+  /** Optional client-supplied L1 id; absent → engine mints `m_<epochMs>_<hex>`. */
+  id: z.string().min(1).max(128).optional(),
+  content: z.string().min(1).max(8192),
+  background: z.string().optional(),
+  metadata_json: metadataJsonSchema.optional(),
+});
+export type AtomicCreateRequest = z.infer<typeof atomicCreateRequestSchema>;
+
+export interface AtomicCreateData {
+  id: string;
+  created_at: string;
 }
 
 export interface AtomicQueryData {
