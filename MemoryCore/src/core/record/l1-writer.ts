@@ -146,7 +146,11 @@ const TAG = "[memory-tdai][l1-writer]";
  * Generate a unique memory ID.
  */
 export function generateMemoryId(): string {
-  return `m_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  // VENDOR PATCH P10 (see PATCHES.md «P10»): 32 → 64 bits of entropy.
+  // l1_records lands ids with ON CONFLICT(record_id) DO UPDATE, so a
+  // collision silently overwrites an existing entry — at 10k rows the
+  // 32-bit birthday bound is ~1.2%. Shape unchanged: m_<epochMs>_<hex>.
+  return `m_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
 }
 
 /**

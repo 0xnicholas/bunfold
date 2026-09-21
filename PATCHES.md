@@ -339,6 +339,34 @@
 
 ---
 
+## P10 — L1 record_id 铸 id 熵 32 → 64 位
+
+- **动机**: `generateMemoryId()` 是 L1 record_id 的唯一铸造点,而 l1_records 落库走
+  `INSERT ... ON CONFLICT(record_id) DO UPDATE`——id 碰撞不是报错而是**静默覆盖**
+  一条既有条目。上游只铸 32 位随机熵(`crypto.randomBytes(4)`):单实例 1 万条时
+  生日界碰撞概率约 1.2%;放宽到 64 位(`randomBytes(8)`)后同规模降到 ~2.7e-9,
+  实际归零。形状不变:`m_<epochMs>_<hex>`(hex 段 8 → 16 字符),epochMs 段仍是
+  排序/排查友好前缀。
+- **落点**: `MemoryCore/src/core/record/l1-writer.ts:149`(`VENDOR PATCH P10` 锚点)。
+  单点改动——全部 L1 写路径(蒸馏 writeMemory、P9 `/atomic/create` 省略 id 分支)
+  都经此函数,无第二铸造点。
+- **不变量**: 每个铸 id 匹配 `/^m_\d+_[0-9a-f]{16}$/`;连续 1000 次铸造无重复;
+  `m_` 前缀不变(`manual_` 前缀的 client id 命名空间与引擎铸 id 保持不相交,
+  P9 撞 id 409 的判别基础不动)。
+- **偏离声明**: 对上游 mint 熵的有意加宽,非 bug 修复(上游在小规模下不构成缺陷)。
+  **upsert 语义不动**:ON CONFLICT DO UPDATE 保持原样——手工写入幂等
+  (ADR-0073 §2,client id 重放收敛到同一行)依赖的正是这个语义;本 patch 只是把
+  「引擎自己铸的 id 撞车」这一意外触发面压到可忽略。
+- **级联修订(诚实登记)**: P9 测试 `atomic-create.test.ts:104` 原钉旧形状
+  `{8}` hex 断言,随本 patch 更新为 `{16}` 并在注释注明原因——该断言锁定的是
+  被本 patch 有意改变的旧行为,非独立契约。
+- **上游 PR 口径**: 按 ADR-0071 §9 属可推上游类(通用加固、零 tokencamp 耦合),
+  登记于此;实际提 PR 与 PIN bump 同批走用户确认。
+- **测试**: `MemoryCore/__tests__/vendor-invariants/l1-record-id-entropy.test.ts`
+  (3 例:形状 ×100、连续 1000 次无重复、`m_` 前缀与 `manual_` 不相交)
+
+---
+
 ## 已知的上游既有问题(不属于本台账,仅登记)
 
 - `MemoryCore` `npm run build` 的 `build:seed-v2` 脚本引用了不存在的

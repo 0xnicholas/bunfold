@@ -100,8 +100,9 @@ describe("P9: /atomic/create mints and honors ids", () => {
     const res = await create({ team_id: TEAM, agent_id: AGENT, user_id: USER, content: "manual fact" });
     expect(res.code).toBe(0);
     const data = res.data as { id: string; created_at: string };
-    // The stock L1 mint (generateMemoryId): m_<epochMs>_<8 hex>.
-    expect(data.id).toMatch(/^m_\d+_[0-9a-f]{8}$/);
+    // The stock L1 mint (generateMemoryId): m_<epochMs>_<hex> — 16 hex
+    // since patch P10 widened the entropy from 32 to 64 bits.
+    expect(data.id).toMatch(/^m_\d+_[0-9a-f]{16}$/);
     // created_at is the same RFC 3339 wire shape /atomic/query rows emit.
     expect(data.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
