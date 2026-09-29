@@ -1,7 +1,7 @@
 # PATCHES.md — tokencamp vendor 分支 patch 台账
 
 本仓是 `TencentCloud/TencentDB-Agent-Memory` 的 fork(tokencamp-pro #215/#216)。
-`vendor` 分支基于锁定的上游基线 **`0468a2a`**(上游默认线 `feat/server_team` HEAD),
+`vendor` 分支基于锁定的上游基线 **`29bb8df`**(上游默认线 `feat/server_team` HEAD),
 以原子 commit 承载 tokencamp 所需的全部引擎改动。本台账是每个 patch 的唯一权威登记:
 动机、落点、不变量、测试位置、以及对上游行为的每一处有意偏离。
 
@@ -18,11 +18,37 @@
 4. 与上游 follow 的新 backport 单独成章(见 «FTS5»),commit message 注明来源 commit。
 5. 禁止在 vendor 分支上做与台账无关的改动;升级基线走独立 rebase 流程,不走本台账。
 
+## 基线沿革
+
+| 基线 | 上游线 | 升级方式 | 说明 |
+| --- | --- | --- | --- |
+| `0468a2a` | `feat/server_team` | 初始锁定 | — |
+| `29bb8df` | `feat/server_team` | `git rebase --onto 29bb8df 0468a2a vendor` | 见下 |
+
+### `0468a2a` → `29bb8df`
+
+- **平移**:10 个 vendor patch commit 全部无冲突平移(`range-diff` 逐条 `=`,patch 内容
+  哈希零漂移)。上游 16 个新 commit 与 vendor patch 触及文件集合**交集为空**,故无冲突。
+- **并行线叠加**:P6–P10(在本基线前已推送到 `origin/vendor`)亦无冲突平移
+  (`range-diff` 逐条 `=`)。平移后本文件全部「**commit**」引用已同步重写;若外部有
+  引用 P6–P10 旧 SHA 处,一律以本文件为权威。
+- **升级依据**:上游默认线前移 16 个 commit,含两处影响本 fork 部署面的安全修复 ——
+  `41dee1f`(Knowledge `/v3` 写/管理端点零鉴权的 service key 门禁,即 #1385)与
+  `5017e2b`(MemoryCore `asset/get`、`asset/list` 的调用方作用域 ACL,即 #1464)。
+  此二者为**上游代码随基线自带**,不是本台账的 vendor patch,故不另立章节。
+- **部署侧待办**:#1385 引入 `KNOWLEDGE_SERVICE_KEY`(为空则放行,向后兼容);
+  tokencamp-pro 侧需确认是否设置该变量以真正启用门禁。
+- **保留声明**:基线 **仍不含** FTS5 MATCH 注入净化 —— 那是本台账 «FTS5» 章的 vendor
+  backport,rebase 时**必须保留**,不得因「上游可能已修」而误删。
+- **升级后验证**:`MemoryCore` vendor-invariants 10 文件 53 测试全绿(含 P6–P10 新增
+  的 4 个套件);`MemoryKnowledge` 3 测试全绿;两处「上游既有问题」在新基线复现
+  情况不变(见下节)。
+
 ---
 
 ## P1 — L1 蒸馏游标持久化后删除已消费 L0 行
 
-- **commit**: `007104d`
+- **commit**: `1570700`
 - **动机**: 零原文存储。L0 行被蒸馏进 L1 且游标持久化后,原文行不应继续留库。
 - **落点**: `MemoryCore/src/utils/pipeline-factory.ts:676` 附近 ——
   `markL1ExtractionComplete`(游标落盘)之后,按本批 `processed` 行的 id 逐行
@@ -37,7 +63,7 @@
 
 ## P2 — 关闭 standalone JSONL 原文镜像(单开关,默认关)
 
-- **commit**: `4e0ea70`
+- **commit**: `aa1994e`
 - **动机**: 零原文存储。standalone 模式下 `conversations/<date>.jsonl` 是一份
   append-only 原文拷贝,没有按行删除面,与 P1 的删除语义冲突。
 - **落点**:
@@ -55,7 +81,7 @@
 
 ## P3 — standalone LLM chat 回调注入归属头,缺头 fail-closed
 
-- **commit**: `f2334f0`
+- **commit**: `e62a240`
 - **动机**: 成本归属。引擎发出的每个 LLM chat 请求必须携带
   `x-tc-instance` + `x-tc-agent`;归属缺失时在**发出 HTTP 请求之前**抛错(fail-closed),
   绝不发未归属请求。
@@ -76,7 +102,7 @@
 
 ## P4 — embedding 回调注入归属头,缺头 fail-closed
 
-- **commit**: `4fce8fc`
+- **commit**: `e8c1ee5`
 - **动机**: 同 P3,覆盖 embeddings 通道。
 - **落点**:
   - `EmbeddingCallOptions` 加 `instanceId?`/`agentId?`;fail-closed + 注头:
@@ -106,7 +132,7 @@
 
 ## P5 — wiki(MemoryKnowledge)LLM 回调注入归属头,缺头 fail-closed
 
-- **commit**: `79262d1`
+- **commit**: `36b8d2f`
 - **动机**: 同 P3,覆盖 wiki ingest 链(AI SDK 直连,`ai` + `@ai-sdk/openai` /
   `@ai-sdk/anthropic`)。
 - **落点**:
@@ -123,7 +149,7 @@
 
 ## FTS5 — 上游 main 线 MATCH 注入修复 backport
 
-- **commit**: `36e20fc`,backport 自上游 main **`1d4f84b`**
+- **commit**: `7fdfcee`,backport 自上游 main **`1d4f84b`**
   ("fix(store): sanitize FTS5 query tokens to prevent MATCH injection", Resolves #160)
 - **背景**: 上游 main 与本线(`feat/server_team`)**无公共祖先**,只能手工搬运;
   上游修在 `src/core/store/sqlite.ts`,本线对应物是
@@ -141,6 +167,9 @@
 ## 已知的上游既有问题(不属于本台账,仅登记)
 
 - `MemoryCore` `npm run build` 的 `build:seed-v2` 脚本引用了不存在的
-  `scripts/seed-v2/tsconfig.json`(基线 `0468a2a` 即如此);`build:plugin`(tsdown)正常。
+  `scripts/seed-v2/tsconfig.json`(基线 `0468a2a`、`29bb8df` 均如此);`build:plugin`(tsdown)正常。
 - `MemoryKnowledge` `npm run typecheck` 在基线上即有 1 个错误
-  (`src/middleware/response-envelope.ts:47`);本台账全部改动**不新增** typecheck 错误。
+  (`src/middleware/response-envelope.ts:47`,TS2322 —— 代码按旧版 Hono 的
+  `bodyCache: Promise` 语义写,而 hono 4.13.7 的 `BodyCache = Partial<Body>` 已是 plain 类型);
+  该文件历史停在 v2.0.0-beta.1,在 `0468a2a` 与 `29bb8df` 上报同一错误 —— **非 rebase 引入**。
+  本台账全部改动**不新增** typecheck 错误。
